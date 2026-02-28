@@ -271,9 +271,7 @@ const showContextMenu = (e: MouseEvent, item: any) => {
   };
 };
 
-const handleContextMenuAddWhitelist = async () => {
-  const fileItem = contextMenu.value.item;
-  contextMenu.value.show = false;
+const addToWhitelist = async (fileItem: any) => {
   if (!fileItem) return;
 
   // 1. Instantly remove from view
@@ -296,19 +294,19 @@ const handleContextMenuAddWhitelist = async () => {
   treeRoot.value = buildTree(scanResult.value);
 
   const newSelCountMap = new Map<string, number>();
-  const countSelected = (node: any): number => {
+  const countSelectedRecursive = (node: any): number => {
     let count = 0;
     if (!node.isDir) {
       if (selectedIds.value.has(node.id)) count = 1;
     } else {
       node.children.forEach((child: any) => {
-        count += countSelected(child);
+        count += countSelectedRecursive(child);
       });
       newSelCountMap.set(node.id, count);
     }
     return count;
   };
-  countSelected(treeRoot.value);
+  countSelectedRecursive(treeRoot.value);
   directorySelectedCount.value = newSelCountMap;
 
   // 2. Persist to whitelist
@@ -326,6 +324,20 @@ const handleContextMenuAddWhitelist = async () => {
       title: "提示",
       kind: "info",
     });
+  }
+};
+
+const handleContextMenuAddWhitelist = async () => {
+  const fileItem = contextMenu.value.item;
+  contextMenu.value.show = false;
+  await addToWhitelist(fileItem);
+};
+
+const openInFolder = async (path: string) => {
+  try {
+    await invoke("show_in_folder", { path });
+  } catch (err: any) {
+    await message(`无法打开目录: ${err}`, { kind: "error" });
   }
 };
 
@@ -1301,6 +1313,22 @@ const executeClean = async () => {
                     <div class="item-name-compact" :title="item.path">
                       {{ item.name }}
                     </div>
+                  </div>
+                  <div class="item-actions">
+                    <button
+                      class="action-btn"
+                      title="打开所在目录"
+                      @click.stop="openInFolder(item.path)"
+                    >
+                      📂
+                    </button>
+                    <button
+                      class="action-btn"
+                      title="加入白名单"
+                      @click.stop="addToWhitelist(item)"
+                    >
+                      🛡️
+                    </button>
                   </div>
                   <div class="item-size-compact">
                     {{
@@ -2381,10 +2409,29 @@ const executeClean = async () => {
   display: flex;
   opacity: 0;
   transition: opacity 0.2s;
-  padding-right: 8px;
+  gap: 4px;
+  margin-right: 8px;
+  flex-shrink: 0;
 }
 .list-item:hover .item-actions {
   opacity: 1;
+}
+.action-btn {
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  color: var(--text-muted);
+}
+.action-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-main);
 }
 
 /* Modals */
