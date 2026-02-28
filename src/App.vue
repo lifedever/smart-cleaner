@@ -25,19 +25,7 @@ const handleTypeSelect = (e: Event) => {
   const typesToAdd = selectElement.value;
   if (!typesToAdd) return;
 
-  const current = extensions.value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const newTypes = typesToAdd
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const uniqueSet = new Set(current);
-  newTypes.forEach((t) => uniqueSet.add(t));
-
-  extensions.value = Array.from(uniqueSet).join(", ");
+  extensions.value = typesToAdd;
 
   // reset select
   selectElement.value = "";
@@ -1046,7 +1034,7 @@ const executeClean = async () => {
                 align-items: center;
               "
             >
-              <span>包含关键词或后缀 (逗号分隔)</span>
+              <span>关键词筛选</span>
               <select
                 style="
                   width: 80px;
