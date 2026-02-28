@@ -1285,7 +1285,9 @@ const executeClean = async () => {
           </button>
         </header>
         <div class="modal-body">
-          <p class="modal-desc">以下目录或文件将在执行扫描时被永远跳过：</p>
+          <p class="modal-desc" v-if="whitelist.length > 0">
+            以下目录或文件将在执行扫描时被永远跳过：
+          </p>
           <div v-if="whitelist.length === 0" class="empty-state mini">
             暂无白名单记录
           </div>
@@ -1905,6 +1907,12 @@ const executeClean = async () => {
   font-size: 48px;
   margin-bottom: 16px;
   opacity: 0.8;
+}
+
+.empty-state.mini {
+  position: static;
+  transform: none;
+  margin: 40px 0;
 }
 
 .progress-path {
