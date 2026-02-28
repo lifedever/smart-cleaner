@@ -43,9 +43,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name || 'v1.0.2' }}
-          releaseName: "Smart Cleaner ${{ github.ref_name || 'v1.0.2' }}"
-          releaseBody: "See the assets to download this version and install."
+          tagName: ${{ github.ref_name || 'v1.0.3' }}
+          releaseName: "Smart Cleaner ${{ github.ref_name || 'v1.0.3' }}"
+          releaseBody: |
+            ### 📥 安装说明 (macOS)
+            由于此应用未经过苹果官方签名，初次运行可能会提示“无法验证开发者”。
+            请在终端执行以下命令解除安全限制：
+
+            ```bash
+            sudo xattr -rd com.apple.quarantine "/Applications/Smart Cleaner.app"
+            ```
+            执行后即可正常打开。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
