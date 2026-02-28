@@ -1465,14 +1465,8 @@ const executeClean = async () => {
                 提取勾选的文件夹内所有的具体文件，逐一加入白名单。此后该目录若产生新文件，<strong>仍然会被正常扫描和清理</strong>。
               </p>
               <button
-                class=""
-                style="
-                  width: 100%;
-                  color: var(--text-main);
-                  justify-content: center;
-                  background: var(--surface);
-                  border: 1px solid var(--border);
-                "
+                class="primary"
+                style="width: 100%; justify-content: center"
                 @click="confirmBatchAddSubFilesOnly"
               >
                 应用此方案
