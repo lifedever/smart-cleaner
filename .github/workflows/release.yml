@@ -38,6 +38,7 @@ jobs:
         run: node scripts/release.mjs
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - name: Create and Upload Release
         env:
