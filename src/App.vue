@@ -421,7 +421,9 @@ const scanFiles = async (resetSelection = true) => {
     scanResult.value = result.files;
     totalSize.value = result.total_size;
 
-    collapsedDirs.value = new Set();
+    if (resetSelection) {
+      collapsedDirs.value = new Set();
+    }
     treeRoot.value = buildTree(scanResult.value);
 
     // Only auto-select all if not a refresh
