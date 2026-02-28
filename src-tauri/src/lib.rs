@@ -243,11 +243,7 @@ async fn move_to_trash(
         );
 
         if path.exists() {
-            let res = if path.is_dir() {
-                fs::remove_dir_all(&path)
-            } else {
-                fs::remove_file(&path)
-            };
+            let res = trash::delete(&path);
 
             if let Err(e) = res {
                 let err_msg = format!("Failed to delete {}: {}", path_str, e);
