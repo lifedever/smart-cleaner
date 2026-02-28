@@ -10,6 +10,8 @@
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --success: #10b981;
+  --accent: #4f46e5;
+  --accent-bg: rgba(79, 70, 229, 0.1);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -32,6 +34,8 @@
     --text-main: #f9fafb;
     --text-muted: #9ca3af;
     --border: #4b5563;
+    --accent: #818cf8;
+    --accent-bg: rgba(129, 140, 248, 0.15);
   }
 }
 

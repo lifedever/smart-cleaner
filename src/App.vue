@@ -1832,8 +1832,8 @@ const executeClean = async () => {
   color: var(--text-muted);
 }
 .badge.highlight {
-  background: rgba(92, 106, 196, 0.1);
-  color: var(--primary);
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
 .tree-controls {
@@ -2074,8 +2074,9 @@ const executeClean = async () => {
   font-size: 14px;
 }
 .highlight-text {
-  color: var(--primary);
+  color: var(--accent);
   font-size: 16px;
+  font-weight: 600;
 }
 .confirm-btn {
   padding: 10px 24px;
