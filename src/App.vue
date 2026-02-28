@@ -14,6 +14,8 @@ import "./assets/styles.css";
 let store: any = null;
 const whitelist = ref<string[]>([]);
 const showWhitelistModal = ref(false);
+const showBatchAddOptionsModal = ref(false);
+const batchAddFolderPathsCache = ref<string[]>([]);
 const showAboutModal = ref(false);
 const activeTab = ref("about");
 const appVersion = ref("");
@@ -780,34 +782,10 @@ const selectedSize = computed(() => {
     .reduce((acc, curr) => acc + curr.size, 0);
 });
 
-const handleBatchAddWhitelist = async () => {
-  const pathsToAdd: string[] = [];
-
-  const scanNode = (node: any) => {
-    if (isAllSelected(node)) {
-      pathsToAdd.push(node.path);
-      return;
-    }
-    if (node.isDir && isPartiallySelected(node)) {
-      node.children.forEach((child: any) => scanNode(child));
-    }
-  };
-
-  if (treeRoot.value) {
-    scanNode(treeRoot.value);
-  }
-
-  if (pathsToAdd.length === 0) {
-    await message("请先勾选需要加入白名单的文件或文件夹", { kind: "warning" });
-    return;
-  }
-
-  const confirm = await showConfirm(
-    "批量加入白名单",
-    `确定要将选定的 ${pathsToAdd.length} 个项目(会自动包含其子项目)加入白名单并隐藏吗？`,
-  );
-  if (!confirm) return;
-
+const executeBatchAddWhitelist = async (
+  pathsToAdd: string[],
+  isDeepFilesOnly: boolean = false,
+) => {
   const removedIds = new Set<string>();
   scanResult.value = scanResult.value.filter((f) => {
     const shouldRemove = pathsToAdd.some(
@@ -858,10 +836,66 @@ const handleBatchAddWhitelist = async () => {
     }
   }
 
-  await message(`成功将 ${pathsToAdd.length} 项加入白名单并隐藏。`, {
+  const desc = isDeepFilesOnly ? "仅加入了相关文件" : "会自动包含其子项目";
+  await message(`成功将 ${pathsToAdd.length} 项（${desc}）加入白名单并隐藏。`, {
     title: "操作成功",
     kind: "info",
   });
+};
+
+const confirmBatchAddSubFilesOnly = async () => {
+  showBatchAddOptionsModal.value = false;
+  const pathsToAdd = scanResult.value
+    .filter((f) => selectedIds.value.has(f.id) && !f.isDir)
+    .map((f) => f.path);
+
+  if (pathsToAdd.length === 0) {
+    await message("所选目录中没有文件。", { kind: "warning" });
+    return;
+  }
+  await executeBatchAddWhitelist(pathsToAdd, true);
+};
+
+const confirmBatchAddFolder = async () => {
+  showBatchAddOptionsModal.value = false;
+  await executeBatchAddWhitelist(batchAddFolderPathsCache.value, false);
+};
+
+const handleBatchAddWhitelist = async () => {
+  const pathsToAdd: string[] = [];
+  let hasDir = false;
+
+  const scanNode = (node: any) => {
+    if (isAllSelected(node)) {
+      pathsToAdd.push(node.path);
+      if (node.isDir) hasDir = true;
+      return;
+    }
+    if (node.isDir && isPartiallySelected(node)) {
+      node.children.forEach((child: any) => scanNode(child));
+    }
+  };
+
+  if (treeRoot.value) {
+    scanNode(treeRoot.value);
+  }
+
+  if (pathsToAdd.length === 0) {
+    await message("请先勾选需要加入白名单的文件或文件夹", { kind: "warning" });
+    return;
+  }
+
+  if (hasDir) {
+    batchAddFolderPathsCache.value = pathsToAdd;
+    showBatchAddOptionsModal.value = true;
+  } else {
+    const confirm = await showConfirm(
+      "批量加入白名单",
+      `确定要将选定的 ${pathsToAdd.length} 个项目加入白名单并隐藏吗？`,
+    );
+    if (!confirm) return;
+    await executeBatchAddWhitelist(pathsToAdd, true);
+  }
 };
 
 const executeClean = async () => {
@@ -1319,6 +1353,134 @@ const executeClean = async () => {
           </div>
         </footer>
       </main>
+    </div>
+
+    <!-- Batch Add Options Modal -->
+    <div
+      class="modal-overlay"
+      v-if="showBatchAddOptionsModal"
+      @click.self="showBatchAddOptionsModal = false"
+    >
+      <div
+        class="modal-content"
+        style="
+          max-width: 440px;
+          border-radius: var(--radius-lg);
+          overflow: hidden;
+          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+        "
+      >
+        <header
+          class="modal-header"
+          style="
+            justify-content: center;
+            background: var(--surface-secondary);
+            border-bottom: 1px solid var(--border);
+            position: relative;
+          "
+        >
+          <h3>选项：添加白名单方式</h3>
+          <button
+            class="close-btn"
+            @click="showBatchAddOptionsModal = false"
+            style="
+              position: absolute;
+              right: 16px;
+              top: 12px;
+              font-size: 16px;
+              color: var(--text-muted);
+              background: transparent;
+              padding: 4px;
+            "
+          >
+            ✕
+          </button>
+        </header>
+        <div class="modal-body" style="padding: 24px">
+          <p class="modal-desc" style="font-size: 14px; margin-bottom: 24px">
+            检测到您所选内容包含文件夹，请选择想要加白的层级粒度：
+          </p>
+
+          <div style="display: flex; flex-direction: column; gap: 16px">
+            <div
+              style="
+                padding: 16px;
+                border: 1px solid var(--border);
+                border-radius: var(--radius-md);
+                box-shadow: var(--shadow-sm);
+              "
+            >
+              <h4
+                style="
+                  margin-bottom: 8px;
+                  font-size: 15px;
+                  color: var(--text-main);
+                "
+              >
+                1. 将整个【文件夹】作为整体加白
+              </h4>
+              <p
+                style="
+                  font-size: 13px;
+                  color: var(--text-muted);
+                  margin-bottom: 12px;
+                  line-height: 1.5;
+                "
+              >
+                文件夹本身加入白名单，不仅隐藏当前文件，未来该目录下产生的<strong>新文件也会被永远被跳过</strong>。
+              </p>
+              <button
+                class="primary"
+                style="width: 100%; justify-content: center"
+                @click="confirmBatchAddFolder"
+              >
+                应用此方案
+              </button>
+            </div>
+            <div
+              style="
+                padding: 16px;
+                border: 1px solid var(--border);
+                border-radius: var(--radius-md);
+                box-shadow: var(--shadow-sm);
+              "
+            >
+              <h4
+                style="
+                  margin-bottom: 8px;
+                  font-size: 15px;
+                  color: var(--text-main);
+                "
+              >
+                2. 仅加白现有的【具体文件】
+              </h4>
+              <p
+                style="
+                  font-size: 13px;
+                  color: var(--text-muted);
+                  margin-bottom: 12px;
+                  line-height: 1.5;
+                "
+              >
+                提取勾选的文件夹内所有的具体文件，逐一加入白名单。此后该目录若产生新文件，<strong>仍然会被正常扫描和清理</strong>。
+              </p>
+              <button
+                class=""
+                style="
+                  width: 100%;
+                  color: var(--text-main);
+                  justify-content: center;
+                  background: var(--surface);
+                  border: 1px solid var(--border);
+                "
+                @click="confirmBatchAddSubFilesOnly"
+              >
+                应用此方案
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Whitelist Modal -->
