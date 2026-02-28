@@ -45,7 +45,21 @@ for (const target of targets) {
       if (tarGzFile && sigFile) {
         const signature = fs.readFileSync(path.join(bundleDir, sigFile), 'utf8').trim();
         const tauriPlatform = target.startsWith('aarch64') ? 'darwin-aarch64' : 'darwin-x86_64';
-        const downloadUrl = `https://github.com/${repo}/releases/download/${tag}/${tarGzFile}`;
+        const arch = target.startsWith('aarch64') ? 'aarch64' : 'x86_64';
+
+        // Rename tar.gz to include arch suffix and replace spaces with underscores
+        // to avoid: 1) both architectures overwriting each other (same filename)
+        //           2) GitHub converting spaces to dots causing 404
+        const baseName = tarGzFile.replace('.app.tar.gz', '');
+        const safeBaseName = baseName.replace(/ /g, '_');
+        const renamedTarGz = `${safeBaseName}_${arch}.app.tar.gz`;
+
+        fs.copyFileSync(
+          path.join(bundleDir, tarGzFile),
+          path.join(bundleDir, renamedTarGz)
+        );
+
+        const downloadUrl = `https://github.com/${repo}/releases/download/${tag}/${renamedTarGz}`;
 
         results.platforms[tauriPlatform] = {
           signature: signature,
@@ -53,6 +67,7 @@ for (const target of targets) {
         };
 
         console.log(`✅ Collected updater info for ${tauriPlatform}`);
+        console.log(`   Renamed: ${tarGzFile} → ${renamedTarGz}`);
         console.log(`   URL: ${downloadUrl}`);
         console.log(`   Signature: ${signature.substring(0, 40)}...`);
       } else {

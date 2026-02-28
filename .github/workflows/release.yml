@@ -58,9 +58,10 @@ jobs:
             执行后即可正常打开。" \
             || echo "Release already exists, uploading assets..."
 
-          # Find and upload all DMGs and updater tarballs
+          # Find and upload all DMGs and updater tarballs (renamed with arch suffix)
           find src-tauri/target -name "*.dmg" -exec gh release upload "$tag_name" {} --clobber \;
-          find src-tauri/target -name "*.tar.gz" -exec gh release upload "$tag_name" {} --clobber \;
+          find src-tauri/target -name "*_aarch64.app.tar.gz" -exec gh release upload "$tag_name" {} --clobber \;
+          find src-tauri/target -name "*_x86_64.app.tar.gz" -exec gh release upload "$tag_name" {} --clobber \;
 
           # Upload the consolidated updater JSON
           gh release upload "$tag_name" latest.json --clobber
