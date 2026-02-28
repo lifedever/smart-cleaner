@@ -20,17 +20,6 @@ const showAboutModal = ref(false);
 const activeTab = ref("about");
 const appVersion = ref("");
 
-const handleTypeSelect = (e: Event) => {
-  const selectElement = e.target as HTMLSelectElement;
-  const typesToAdd = selectElement.value;
-  if (!typesToAdd) return;
-
-  extensions.value = typesToAdd;
-
-  // reset select
-  selectElement.value = "";
-};
-
 // Custom Modal State
 const confirmModal = ref({
   show: false,
@@ -131,6 +120,30 @@ const minSizeMB = ref<number | "">("");
 const createdBeforeDays = ref<number | "">("");
 const modifiedBeforeDays = ref<number | "">("");
 const extensions = ref("");
+const extensionType = ref("");
+
+watch(extensionType, (val) => {
+  if (val) {
+    extensions.value = val;
+  }
+});
+
+watch(extensions, (val) => {
+  if (
+    ![
+      ".mp4,.mov,.avi,.mkv,.wmv,.flv,.webm",
+      ".jpg,.jpeg,.png,.gif,.bmp,.webp,.tiff,.svg",
+      ".mp3,.wav,.aac,.flac,.ogg,.m4a",
+      ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.txt,.md,.csv",
+      ".zip,.rar,.7z,.tar,.gz",
+      ".dmg,.pkg,.app,.exe,.msi",
+    ].includes(val)
+  ) {
+    extensionType.value = "";
+  } else {
+    extensionType.value = val;
+  }
+});
 const includeEmptyDirs = ref(true);
 
 const collapsedDirs = ref<Set<string>>(new Set());
@@ -1046,9 +1059,10 @@ const executeClean = async () => {
                   color: var(--text-main);
                   cursor: pointer;
                 "
-                @change="handleTypeSelect"
+                @change=""
+                v-model="extensionType"
               >
-                <option value="" disabled selected hidden>常用类型 ▾</option>
+                <option value="" disabled hidden>常用类型 ▾</option>
                 <option value=".mp4,.mov,.avi,.mkv,.wmv,.flv,.webm">
                   视频文件
                 </option>
