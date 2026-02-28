@@ -54,4 +54,4 @@ jobs:
             执行后即可正常打开。
           releaseDraft: false
           prerelease: false
-          args: --target aarch64-apple-darwin,x86_64-apple-darwin
+          args: --target aarch64-apple-darwin --target x86_64-apple-darwin
