@@ -9,16 +9,8 @@ jobs:
   release:
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            arch: x86_64-apple-darwin
-          - platform: macos-latest
-            arch: aarch64-apple-darwin
+    runs-on: macos-latest
 
-    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,7 +18,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.arch }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -62,4 +54,4 @@ jobs:
             执行后即可正常打开。
           releaseDraft: false
           prerelease: false
-          args: --target ${{ matrix.arch }}
+          args: --target aarch64-apple-darwin,x86_64-apple-darwin
