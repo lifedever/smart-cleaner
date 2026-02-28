@@ -1574,19 +1574,25 @@ const executeClean = async () => {
   color: var(--primary);
 }
 
+.tree-controls {
+  display: flex;
+  gap: 8px;
+}
 .mini-btn {
-  padding: 2px 6px;
+  padding: 2px 10px;
   font-size: 10px;
   background: var(--surface-secondary);
   border: 1px solid var(--border);
   color: var(--text-muted);
   height: 20px;
   border-radius: 4px;
-  opacity: 0.7;
+  opacity: 0.8;
+  transition: all 0.2s ease;
 }
 .mini-btn:hover {
   opacity: 1;
   background: var(--border);
+  color: var(--text-main);
 }
 
 .update-dot {
