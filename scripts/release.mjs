@@ -26,21 +26,30 @@ for (const target of targets) {
     // Run building
     execSync(`npx tauri build --target ${target}`, { stdio: 'inherit' });
     
-    // Path to the generated updater JSON
-    // Mapping Tauri platform name to its key in latest.json
-    // aarch64-apple-darwin -> darwin-aarch64
-    // x86_64-apple-darwin -> darwin-x86_64
-    const tauriPlatform = target.startsWith('aarch64') ? 'darwin-aarch64' : 'darwin-x86_64';
-    const jsonPath = path.join('src-tauri', 'target', target, 'release', 'bundle', 'updater', 'latest.json');
+    // List some files for debugging
+    const bundleDir = path.join('src-tauri', 'target', target, 'release', 'bundle');
+    console.log(`Checking bundle dir: ${bundleDir}`);
     
-    if (fs.existsSync(jsonPath)) {
-      const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    const tauriPlatform = target.startsWith('aarch64') ? 'darwin-aarch64' : 'darwin-x86_64';
+    const jsonPath = path.join(bundleDir, 'updater', 'latest.json');
+    const altJsonPath = path.join(bundleDir, 'macos', 'latest.json');
+    
+    let activePath = fs.existsSync(jsonPath) ? jsonPath : (fs.existsSync(altJsonPath) ? altJsonPath : null);
+    
+    if (activePath) {
+      console.log(`✅ Found updater JSON at: ${activePath}`);
+      const data = JSON.parse(fs.readFileSync(activePath, 'utf8'));
       if (data.platforms && data.platforms[tauriPlatform]) {
         results.platforms[tauriPlatform] = data.platforms[tauriPlatform];
         console.log(`✅ Collected signature for ${tauriPlatform}`);
       }
     } else {
-      console.warn(`⚠️ Warning: No latest.json found for ${target} at ${jsonPath}`);
+      console.warn(`⚠️ Warning: No latest.json found for ${target} in ${bundleDir}`);
+      // Find all json files to help debug
+      try {
+        const allFiles = execSync(`find ${bundleDir} -name "*.json"`, { encoding: 'utf8' });
+        console.log(`Potential JSON files found:\n${allFiles}`);
+      } catch (e) {}
     }
   } catch (err) {
     console.error(`❌ Error building for ${target}:`, err.message);
