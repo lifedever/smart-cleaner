@@ -243,13 +243,19 @@ async fn move_to_trash(
         );
 
         if path.exists() {
-            if let Err(e) = delete(&path) {
+            let res = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+
+            if let Err(e) = res {
                 let err_msg = format!("Failed to delete {}: {}", path_str, e);
                 eprintln!("{}", err_msg);
                 errors.push(err_msg);
             } else {
                 // If it's a file, we might want to clean up its parent folder if it became empty
-                trash_parent_if_empty(&path, &target_path);
+                remove_parent_if_empty(&path, &target_path);
             }
         }
     }
@@ -259,14 +265,15 @@ async fn move_to_trash(
     Ok(())
 }
 
-fn trash_parent_if_empty(path: &PathBuf, target_dir: &PathBuf) {
+fn remove_parent_if_empty(path: &PathBuf, target_dir: &PathBuf) {
     if let Some(parent) = path.parent() {
+        let parent_ptr = parent.to_path_buf();
         // Only clean up parents INSIDE the target directory
-        if parent == target_dir || !parent.starts_with(target_dir) {
+        if parent_ptr == *target_dir || !parent_ptr.starts_with(target_dir) {
             return;
         }
 
-        let is_empty = fs::read_dir(parent)
+        let is_empty = fs::read_dir(&parent_ptr)
             .map(|entries| {
                 entries.filter_map(|e| e.ok()).all(|e| {
                     let name = e.file_name();
@@ -277,9 +284,9 @@ fn trash_parent_if_empty(path: &PathBuf, target_dir: &PathBuf) {
             .unwrap_or(false);
 
         if is_empty {
-            if let Ok(_) = delete(parent) {
+            if let Ok(_) = fs::remove_dir_all(&parent_ptr) {
                 // Recurse to see if the grand-parent is now also empty
-                trash_parent_if_empty(&parent.to_path_buf(), target_dir);
+                remove_parent_if_empty(&parent_ptr, target_dir);
             }
         }
     }

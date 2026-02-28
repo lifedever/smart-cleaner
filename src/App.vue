@@ -37,49 +37,89 @@ const showConfirm = (title: string, message: string) => {
   });
 };
 
-const checkUpdate = async () => {
+const hasUpdate = ref(false);
+const updateInfo = ref<any>(null);
+
+const checkUpdate = async (silent = false) => {
   try {
     const update = await check();
     if (update) {
-      const yes = await ask(
-        `发现新版本 ${update.version}，是否更新？\n${update.body || ""}`,
-        { title: "发现新版本", kind: "info" },
-      );
-      if (yes) {
-        await update.downloadAndInstall();
-        await message("更新安装完毕，请重启应用以生效！", {
-          title: "更新成功",
-          kind: "info",
-        });
+      hasUpdate.value = true;
+      updateInfo.value = update;
+      if (!silent) {
+        const yes = await ask(
+          `发现新版本 ${update.version}，是否更新？\n${update.body || ""}`,
+          { title: "发现新版本", kind: "info" },
+        );
+        if (yes) {
+          await update.downloadAndInstall();
+          await message("更新安装完毕，请重启应用以生效！", {
+            title: "更新成功",
+            kind: "info",
+          });
+        }
       }
     } else {
-      await message("当前已经是最新版本", { title: "检查更新" });
+      hasUpdate.value = false;
+      if (!silent) {
+        await message("当前已经是最新版本", { title: "检查更新" });
+      }
     }
   } catch (e: any) {
-    await message(`检查更新失败: ${e.message}`, {
-      title: "错误",
-      kind: "error",
-    });
+    if (!silent) {
+      const errorMsg =
+        e?.message || (typeof e === "string" ? e : JSON.stringify(e));
+      await message(`检查更新失败: ${errorMsg}`, {
+        title: "错误",
+        kind: "error",
+      });
+    }
   }
+};
+
+const expandAll = () => {
+  collapsedDirs.value.clear();
+};
+
+const collapseAll = () => {
+  const allDirs = scanResult.value.filter((f) => f.is_dir).map((f) => f.id);
+  collapsedDirs.value = new Set(allDirs);
 };
 
 const openGithub = async () => {
   await openUrl("https://github.com/lifedever/smart-cleaner");
 };
 
-const initStore = async () => {
-  store.value = await load("whitelist.json");
-  const stored = await store.value.get("paths");
-  if (stored && Array.isArray(stored)) {
-    whitelist.value = stored;
-  } else {
-    await store.value.set("paths", []);
-    await store.value.save();
+async function initStore() {
+  try {
+    store.value = await load("settings.json", { autoSave: true, defaults: {} });
+    const savedWhitelist = await store.value.get("whitelist");
+    if (savedWhitelist && Array.isArray(savedWhitelist)) {
+      whitelist.value = savedWhitelist as string[];
+    } else {
+      await store.value.set("whitelist", []);
+      await store.value.save();
+    }
+  } catch (e) {
+    console.error("Failed to load store:", e);
   }
-};
+}
 
 onMounted(async () => {
-  initStore();
+  await initStore();
+  // Auto check update once a day
+  if (store.value) {
+    const lastCheck = (await store.value.get("last_update_check")) as number;
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+
+    if (!lastCheck || now - lastCheck > oneDay) {
+      await checkUpdate(true);
+      await store.value.set("last_update_check", now);
+      await store.value.save();
+    }
+  }
+
   window.addEventListener("click", () => {
     if (contextMenu.value.show) {
       contextMenu.value.show = false;
@@ -390,21 +430,11 @@ const toggleSelection = (item: any) => {
   selectedIds.value = nextSet;
 };
 
-const toggleSelectAll = () => {
-  if (selectedIds.value.size === scanResult.value.length) {
-    selectedIds.value = new Set();
-  } else {
-    selectedIds.value = new Set(scanResult.value.map((f) => f.id));
-  }
-};
+// Removed unused toggleSelectAll
 
 const sortOrder = ref<"none" | "asc" | "desc">("desc");
 
-const toggleSort = () => {
-  if (sortOrder.value === "none") sortOrder.value = "desc";
-  else if (sortOrder.value === "desc") sortOrder.value = "asc";
-  else sortOrder.value = "none";
-};
+// Removed unused toggleSort
 
 const getFileIcon = (fileName: string, isDir: boolean) => {
   if (isDir) return "📁";
@@ -718,28 +748,56 @@ const executeClean = async () => {
 
           <div v-else class="file-list">
             <div class="list-header">
-              <label class="checkbox-ctrl">
+              <div class="checkbox-ctrl">
                 <input
                   type="checkbox"
                   :checked="
-                    selectedIds.size > 0 &&
-                    selectedIds.size === scanResult.length
+                    isAllSelected({ isDir: true, path: targetDir, id: 'root' })
                   "
-                  @change="toggleSelectAll"
+                  :indeterminate="
+                    isPartiallySelected({
+                      isDir: true,
+                      path: targetDir,
+                      id: 'root',
+                    })
+                  "
+                  @change="
+                    toggleSelection({
+                      isDir: true,
+                      path: targetDir,
+                      id: 'root',
+                    })
+                  "
                 />
-                全选
-              </label>
-              <span class="col-name">名称</span>
-              <span
+                <span style="font-size: 11px; margin-left: 4px; opacity: 0.8"
+                  >全选</span
+                >
+              </div>
+              <div
+                class="col-name"
+                style="display: flex; align-items: center; gap: 12px"
+              >
+                <span>名称</span>
+                <div class="tree-controls" v-if="treeData.length > 0">
+                  <button class="mini-btn" @click="expandAll" title="全部展开">
+                    展开
+                  </button>
+                  <button
+                    class="mini-btn"
+                    @click="collapseAll"
+                    title="全部折叠"
+                  >
+                    折叠
+                  </button>
+                </div>
+              </div>
+              <div
                 class="col-size"
-                @click="toggleSort"
+                @click="sortOrder = sortOrder === 'desc' ? 'asc' : 'desc'"
                 style="cursor: pointer; user-select: none"
               >
-                大小
-                <span v-if="sortOrder === 'asc'">↑</span>
-                <span v-else-if="sortOrder === 'desc'">↓</span>
-                <span v-else>↕</span>
-              </span>
+                大小 {{ sortOrder === "desc" ? "↓" : "↑" }}
+              </div>
             </div>
 
             <RecycleScroller
@@ -1208,9 +1266,11 @@ const executeClean = async () => {
             align-items: center;
             gap: 4px;
             padding: 4px;
+            position: relative;
           "
         >
           ℹ️ 关于中心
+          <span v-if="hasUpdate" class="update-dot" title="有新版本可用"></span>
         </button>
       </div>
     </footer>
@@ -1425,6 +1485,32 @@ const executeClean = async () => {
 .badge.highlight {
   background: rgba(92, 106, 196, 0.1);
   color: var(--primary);
+}
+
+.mini-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  height: 20px;
+  border-radius: 4px;
+  opacity: 0.7;
+}
+.mini-btn:hover {
+  opacity: 1;
+  background: var(--border);
+}
+
+.update-dot {
+  position: absolute;
+  top: 2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  background: #ff4d4f;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface);
 }
 
 .list-container {
