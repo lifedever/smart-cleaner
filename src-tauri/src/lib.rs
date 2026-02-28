@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
-use trash::delete;
+
 use walkdir::WalkDir;
 
 #[derive(Debug, Serialize, Deserialize)]

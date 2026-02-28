@@ -78,7 +78,7 @@ const checkUpdate = async (silent = false) => {
 };
 
 const expandAll = () => {
-  collapsedDirs.value.clear();
+  collapsedDirs.value = new Set();
 };
 
 const collapseAll = () => {
@@ -1126,7 +1126,7 @@ const executeClean = async () => {
           >
             <button
               class="primary btn-block"
-              @click="checkUpdate"
+              @click="() => checkUpdate(false)"
               style="
                 font-size: 14px;
                 display: flex;
