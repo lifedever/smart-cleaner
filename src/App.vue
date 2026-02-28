@@ -11,7 +11,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import "./assets/styles.css";
 
 // Store
-const store = ref<any>(null);
+let store: any = null;
 const whitelist = ref<string[]>([]);
 const showWhitelistModal = ref(false);
 const showAboutModal = ref(false);
@@ -114,13 +114,13 @@ const openGithub = async () => {
 
 async function initStore() {
   try {
-    store.value = await load("settings.json", { autoSave: true, defaults: {} });
-    const savedWhitelist = await store.value.get("whitelist");
+    store = await load("settings.json", { autoSave: true, defaults: {} });
+    const savedWhitelist = await store.get("whitelist");
     if (savedWhitelist && Array.isArray(savedWhitelist)) {
       whitelist.value = savedWhitelist as string[];
     } else {
-      await store.value.set("whitelist", []);
-      await store.value.save();
+      await store.set("whitelist", []);
+      await store.save();
     }
   } catch (e) {
     console.error("Failed to load store:", e);
@@ -135,15 +135,15 @@ onMounted(async () => {
   }
   await initStore();
   // Auto check update once a day
-  if (store.value) {
-    const lastCheck = (await store.value.get("last_update_check")) as number;
+  if (store) {
+    const lastCheck = (await store.get("last_update_check")) as number;
     const now = Date.now();
     const oneDay = 24 * 60 * 60 * 1000;
 
     if (!lastCheck || now - lastCheck > oneDay) {
       await checkUpdate(true);
-      await store.value.set("last_update_check", now);
-      await store.value.save();
+      await store.set("last_update_check", now);
+      await store.save();
     }
   }
 
@@ -225,8 +225,8 @@ const handleContextMenuAddWhitelist = async () => {
   // 2. Persist to whitelist
   if (!whitelist.value.includes(fileItem.path)) {
     whitelist.value.push(fileItem.path);
-    await store.value.set("whitelist", Array.from(whitelist.value));
-    await store.value.save();
+    await store.set("whitelist", Array.from(whitelist.value));
+    await store.save();
 
     await message(
       `「${fileItem.name}」已加入白名单，该记录已从本次扫描列表中移除。`,
@@ -242,16 +242,16 @@ const handleContextMenuAddWhitelist = async () => {
 
 const removeFromWhitelist = async (path: string) => {
   whitelist.value = whitelist.value.filter((p) => p !== path);
-  await store.value.set("whitelist", Array.from(whitelist.value));
-  await store.value.save();
+  await store.set("whitelist", Array.from(whitelist.value));
+  await store.save();
 };
 
 const clearWhitelist = async () => {
   const confirm = await showConfirm("清空确认", "确定要清空所有白名单记录吗？");
   if (confirm) {
     whitelist.value = [];
-    await store.value.set("whitelist", []);
-    await store.value.save();
+    await store.set("whitelist", []);
+    await store.save();
   }
 };
 
