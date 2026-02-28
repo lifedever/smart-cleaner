@@ -219,6 +219,14 @@ onMounted(async () => {
 
 const isCleaning = ref(false);
 const cleanProgress = ref({ total: 0, current: 0, path: "" });
+const isCanceling = ref(false);
+
+const cancelClean = async () => {
+  if (isCleaning.value && !isCanceling.value) {
+    isCanceling.value = true;
+    await invoke("cancel_clean");
+  }
+};
 const _unlistenClean = ref<any>(null);
 
 const contextMenu = ref({
@@ -870,6 +878,7 @@ const executeClean = async () => {
       .map((f) => f.path);
 
     isCleaning.value = true;
+    isCanceling.value = false;
     cleanProgress.value = { total: pathsToDelete.length, current: 0, path: "" };
 
     try {
@@ -880,6 +889,16 @@ const executeClean = async () => {
 
       // Delay slightly for UX
       await new Promise((resolve) => setTimeout(resolve, 800));
+
+      if (isCanceling.value) {
+        await message(
+          `清理被手动终止（已清理 ${cleanProgress.value.current} / ${cleanProgress.value.total}），将重新刷新列表。`,
+          {
+            title: "清理终止",
+            kind: "info",
+          },
+        );
+      }
 
       // 成功后重新触发一遍扫描以刷新列表
       scanFiles(false);
@@ -1231,16 +1250,47 @@ const executeClean = async () => {
               style="
                 display: flex;
                 justify-content: space-between;
+                align-items: center;
                 margin-bottom: 8px;
                 font-size: 13px;
               "
             >
-              <span
-                >正在清理: {{ cleanProgress.path.split(/[/\\]/).pop() }}</span
+              <div
+                style="
+                  flex: 1;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                  margin-right: 12px;
+                "
               >
-              <span
-                >{{ cleanProgress.current }} / {{ cleanProgress.total }}</span
+                正在清理: {{ cleanProgress.path.split(/[/\\]/).pop() }}
+              </div>
+              <div
+                style="
+                  display: flex;
+                  gap: 12px;
+                  align-items: center;
+                  white-space: nowrap;
+                "
               >
+                <span
+                  >{{ cleanProgress.current }} / {{ cleanProgress.total }}</span
+                >
+                <button
+                  class="mini-btn"
+                  style="
+                    cursor: pointer;
+                    color: var(--danger);
+                    border-color: rgba(239, 68, 68, 0.4);
+                  "
+                  @click="cancelClean"
+                  :disabled="isCanceling"
+                  title="终止清理"
+                >
+                  {{ isCanceling ? "正在终止..." : "终止清理" }}
+                </button>
+              </div>
             </div>
             <div
               class="progress-bar-bg"

@@ -3816,7 +3816,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-app"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
  "chrono",
  "num-format",

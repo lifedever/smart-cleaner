@@ -1,9 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use walkdir::WalkDir;
+
+use tauri::{AppHandle, Emitter};
+
+pub struct AppState {
+    pub cancel_clean: AtomicBool,
+}
+
+#[tauri::command]
+fn cancel_clean(state: tauri::State<'_, AppState>) {
+    state.cancel_clean.store(true, Ordering::Relaxed);
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -32,8 +44,6 @@ pub struct ScanOptions {
     pub include_empty_dirs: Option<bool>,
     pub whitelist: Option<Vec<String>>,
 }
-
-use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize)]
 struct ScanProgress {
@@ -219,15 +229,27 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
 #[tauri::command]
 async fn move_to_trash(
     app: AppHandle,
+    state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     target_dir: String,
 ) -> Result<(), String> {
+    state.cancel_clean.store(false, Ordering::Relaxed);
     let mut errors = Vec::new();
     let total = paths.len() as u64;
     let mut current = 0;
     let target_path = PathBuf::from(&target_dir);
 
+    let mut context = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        context.set_delete_method(DeleteMethod::NsFileManager);
+    }
+
     for path_str in paths {
+        if state.cancel_clean.load(Ordering::Relaxed) {
+            break;
+        }
         current += 1;
         let path = PathBuf::from(&path_str);
 
@@ -242,7 +264,7 @@ async fn move_to_trash(
         );
 
         if path.exists() {
-            let res = trash::delete(&path);
+            let res = context.delete(&path);
 
             if let Err(e) = res {
                 let err_msg = format!("Failed to delete {}: {}", path_str, e);
@@ -290,12 +312,19 @@ fn remove_parent_if_empty(path: &PathBuf, target_dir: &PathBuf) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .manage(AppState {
+            cancel_clean: AtomicBool::new(false),
+        })
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan_directory, move_to_trash])
+        .invoke_handler(tauri::generate_handler![
+            scan_directory,
+            move_to_trash,
+            cancel_clean,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
