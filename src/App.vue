@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from "vue";
+import { ref, computed, nextTick, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, message, ask } from "@tauri-apps/plugin-dialog";
@@ -112,6 +112,19 @@ const openGithub = async () => {
   await openUrl("https://github.com/lifedever/smart-cleaner");
 };
 
+// Form State
+const targetDir = ref("");
+const minSizeMB = ref<number | "">("");
+const createdBeforeDays = ref<number | "">("");
+const modifiedBeforeDays = ref<number | "">("");
+const extensions = ref("");
+const includeEmptyDirs = ref(true);
+
+const collapsedDirs = ref<Set<string>>(new Set());
+const treeRoot = ref<any>(null);
+const directoryTotalCount = new Map<string, number>();
+const directorySelectedCount = ref<Map<string, number>>(new Map());
+
 async function initStore() {
   try {
     store = await load("settings.json", { autoSave: true, defaults: {} });
@@ -121,6 +134,22 @@ async function initStore() {
     } else {
       await store.set("whitelist", []);
       await store.save();
+    }
+
+    const savedState: any = await store.get("form_state");
+    if (savedState) {
+      if (savedState.targetDir !== undefined)
+        targetDir.value = savedState.targetDir;
+      if (savedState.minSizeMB !== undefined)
+        minSizeMB.value = savedState.minSizeMB;
+      if (savedState.createdBeforeDays !== undefined)
+        createdBeforeDays.value = savedState.createdBeforeDays;
+      if (savedState.modifiedBeforeDays !== undefined)
+        modifiedBeforeDays.value = savedState.modifiedBeforeDays;
+      if (savedState.extensions !== undefined)
+        extensions.value = savedState.extensions;
+      if (savedState.includeEmptyDirs !== undefined)
+        includeEmptyDirs.value = savedState.includeEmptyDirs;
     }
   } catch (e) {
     console.error("Failed to load store:", e);
@@ -134,6 +163,32 @@ onMounted(async () => {
     console.error("Failed to get version:", e);
   }
   await initStore();
+
+  watch(
+    [
+      targetDir,
+      minSizeMB,
+      createdBeforeDays,
+      modifiedBeforeDays,
+      extensions,
+      includeEmptyDirs,
+    ],
+    async () => {
+      if (store) {
+        await store.set("form_state", {
+          targetDir: targetDir.value,
+          minSizeMB: minSizeMB.value,
+          createdBeforeDays: createdBeforeDays.value,
+          modifiedBeforeDays: modifiedBeforeDays.value,
+          extensions: extensions.value,
+          includeEmptyDirs: includeEmptyDirs.value,
+        });
+        await store.save();
+      }
+    },
+    { deep: true },
+  );
+
   // Auto check update once a day
   if (store) {
     const lastCheck = (await store.get("last_update_check")) as number;
@@ -254,19 +309,6 @@ const clearWhitelist = async () => {
     await store.save();
   }
 };
-
-// Form State
-const targetDir = ref("");
-const minSizeMB = ref<number | "">("");
-const createdBeforeDays = ref<number | "">("");
-const modifiedBeforeDays = ref<number | "">("");
-const extensions = ref("");
-const includeEmptyDirs = ref(true);
-
-const collapsedDirs = ref<Set<string>>(new Set());
-const treeRoot = ref<any>(null);
-const directoryTotalCount = new Map<string, number>();
-const directorySelectedCount = ref<Map<string, number>>(new Map());
 
 const buildTree = (files: any[]) => {
   const root: any = {
@@ -730,6 +772,90 @@ const selectedSize = computed(() => {
     .reduce((acc, curr) => acc + curr.size, 0);
 });
 
+const handleBatchAddWhitelist = async () => {
+  const pathsToAdd: string[] = [];
+
+  const scanNode = (node: any) => {
+    if (isAllSelected(node)) {
+      pathsToAdd.push(node.path);
+      return;
+    }
+    if (node.isDir && isPartiallySelected(node)) {
+      node.children.forEach((child: any) => scanNode(child));
+    }
+  };
+
+  if (treeRoot.value) {
+    scanNode(treeRoot.value);
+  }
+
+  if (pathsToAdd.length === 0) {
+    await message("请先勾选需要加入白名单的文件或文件夹", { kind: "warning" });
+    return;
+  }
+
+  const confirm = await showConfirm(
+    "批量加入白名单",
+    `确定要将选定的 ${pathsToAdd.length} 个项目(会自动包含其子项目)加入白名单并隐藏吗？`,
+  );
+  if (!confirm) return;
+
+  const removedIds = new Set<string>();
+  scanResult.value = scanResult.value.filter((f) => {
+    const shouldRemove = pathsToAdd.some(
+      (p) =>
+        p === f.path ||
+        f.path.startsWith(p + "/") ||
+        f.path.startsWith(p + "\\"),
+    );
+    if (shouldRemove) {
+      removedIds.add(f.id);
+    }
+    return !shouldRemove;
+  });
+
+  const nextSet = new Set(selectedIds.value);
+  removedIds.forEach((id) => nextSet.delete(id));
+  selectedIds.value = nextSet;
+  treeRoot.value = buildTree(scanResult.value);
+
+  const newSelCountMap = new Map<string, number>();
+  const countSelected = (node: any): number => {
+    let count = 0;
+    if (!node.isDir) {
+      if (selectedIds.value.has(node.id)) count = 1;
+    } else {
+      node.children.forEach((child: any) => {
+        count += countSelected(child);
+      });
+      newSelCountMap.set(node.id, count);
+    }
+    return count;
+  };
+  countSelected(treeRoot.value);
+  directorySelectedCount.value = newSelCountMap;
+
+  let addedCount = 0;
+  for (const p of pathsToAdd) {
+    if (!whitelist.value.includes(p)) {
+      whitelist.value.push(p);
+      addedCount++;
+    }
+  }
+
+  if (addedCount > 0) {
+    if (store) {
+      await store.set("whitelist", Array.from(whitelist.value));
+      await store.save();
+    }
+  }
+
+  await message(`成功将 ${pathsToAdd.length} 项加入白名单并隐藏。`, {
+    title: "操作成功",
+    kind: "info",
+  });
+};
+
 const executeClean = async () => {
   if (selectedIds.value.size === 0) return;
 
@@ -948,6 +1074,15 @@ const executeClean = async () => {
                     title="全部折叠"
                   >
                     折叠
+                  </button>
+                  <button
+                    v-if="selectedIds.size > 0"
+                    class="mini-btn"
+                    style="color: var(--accent); border-color: var(--accent)"
+                    @click="handleBatchAddWhitelist"
+                    title="批量将勾选的文件/文件夹加入白名单"
+                  >
+                    批量加白
                   </button>
                 </div>
               </div>
