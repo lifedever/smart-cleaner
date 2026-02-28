@@ -349,7 +349,7 @@ const _unlistenProgress = ref<any>(null);
 
 const scanResult = ref<any[]>([]);
 const totalSize = ref(0);
-const selectedIds = ref<Set<String>>(new Set());
+const selectedIds = ref<Set<string>>(new Set());
 
 const selectDirectory = async () => {
   const result = await open({
@@ -369,7 +369,7 @@ const formatSize = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 };
 
-const scanFiles = async () => {
+const scanFiles = async (resetSelection = true) => {
   if (!targetDir.value) {
     await message("请先选择要清理的目录", { title: "提示", kind: "warning" });
     return;
@@ -424,19 +424,47 @@ const scanFiles = async () => {
     collapsedDirs.value = new Set();
     treeRoot.value = buildTree(scanResult.value);
 
-    // Initial selected state
-    const initialSelection = new Set<string>();
-    const selCountMap = new Map<string, number>();
-    scanResult.value.forEach((f) => {
-      initialSelection.add(f.id);
-    });
+    // Only auto-select all if not a refresh
+    if (resetSelection) {
+      const initialSelection = new Set<string>();
+      const selCountMap = new Map<string, number>();
+      scanResult.value.forEach((f) => {
+        initialSelection.add(f.id);
+      });
 
-    // Helper to fill selection map at start
-    directoryTotalCount.forEach((count, dirId) => {
-      selCountMap.set(dirId, count);
-    });
-    directorySelectedCount.value = selCountMap;
-    selectedIds.value = initialSelection;
+      // Helper to fill selection map at start
+      directoryTotalCount.forEach((count, dirId) => {
+        selCountMap.set(dirId, count);
+      });
+      directorySelectedCount.value = selCountMap;
+      selectedIds.value = initialSelection;
+    } else {
+      // Refresh mode: clear selections that no longer exist
+      const nextSet = new Set<string>();
+      selectedIds.value.forEach((id) => {
+        if (scanResult.value.some((f) => f.id === id)) {
+          nextSet.add(id);
+        }
+      });
+      selectedIds.value = nextSet;
+
+      // Re-calculate counts for current selection
+      const newSelCountMap = new Map<string, number>();
+      const countSelected = (node: any): number => {
+        let count = 0;
+        if (!node.isDir) {
+          if (selectedIds.value.has(node.id)) count = 1;
+        } else {
+          node.children.forEach((child: any) => {
+            count += countSelected(child);
+          });
+          newSelCountMap.set(node.id, count);
+        }
+        return count;
+      };
+      countSelected(treeRoot.value);
+      directorySelectedCount.value = newSelCountMap;
+    }
   } catch (err: any) {
     await message(`扫描失败: ${err}`, { title: "错误", kind: "error" });
   } finally {
@@ -682,14 +710,14 @@ const executeClean = async () => {
       await new Promise((resolve) => setTimeout(resolve, 800));
 
       // 成功后重新触发一遍扫描以刷新列表
-      scanFiles();
+      scanFiles(false);
     } catch (err: any) {
       await message(`${err}`, {
         title: "部分操作失败",
         kind: "warning",
       });
       // 即便有部分失败，也可以刷新一下列表看看剩下哪些
-      scanFiles();
+      scanFiles(false);
     } finally {
       isCleaning.value = false;
     }
@@ -790,8 +818,8 @@ const executeClean = async () => {
         <div class="action-footer">
           <button
             class="primary btn-block scan-btn"
-            @click="scanFiles"
             :disabled="isScanning || !targetDir"
+            @click="() => scanFiles(true)"
           >
             {{ isScanning ? "正在深度扫描..." : "开始扫描" }}
           </button>
