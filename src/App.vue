@@ -192,11 +192,28 @@ const handleContextMenuAddWhitelist = async () => {
   const nextSet = new Set(selectedIds.value);
   nextSet.delete(fileItem.id);
   selectedIds.value = nextSet;
+  treeRoot.value = buildTree(scanResult.value);
+
+  const newSelCountMap = new Map<string, number>();
+  const countSelected = (node: any): number => {
+    let count = 0;
+    if (!node.isDir) {
+      if (selectedIds.value.has(node.id)) count = 1;
+    } else {
+      node.children.forEach((child: any) => {
+        count += countSelected(child);
+      });
+      newSelCountMap.set(node.id, count);
+    }
+    return count;
+  };
+  countSelected(treeRoot.value);
+  directorySelectedCount.value = newSelCountMap;
 
   // 2. Persist to whitelist
   if (!whitelist.value.includes(fileItem.path)) {
     whitelist.value.push(fileItem.path);
-    await store.value.set("paths", whitelist.value);
+    await store.value.set("whitelist", whitelist.value);
     await store.value.save();
 
     await message(
@@ -213,7 +230,7 @@ const handleContextMenuAddWhitelist = async () => {
 
 const removeFromWhitelist = async (path: string) => {
   whitelist.value = whitelist.value.filter((p) => p !== path);
-  await store.value.set("paths", whitelist.value);
+  await store.value.set("whitelist", whitelist.value);
   await store.value.save();
 };
 
@@ -221,7 +238,7 @@ const clearWhitelist = async () => {
   const confirm = await showConfirm("清空确认", "确定要清空所有白名单记录吗？");
   if (confirm) {
     whitelist.value = [];
-    await store.value.set("paths", []);
+    await store.value.set("whitelist", []);
     await store.value.save();
   }
 };
