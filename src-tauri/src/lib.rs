@@ -135,8 +135,26 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
                 if should_include {
                     if let Some(exts) = &options.extensions {
                         if !exts.is_empty() {
-                            let file_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            if !exts.iter().any(|ext| ext.eq_ignore_ascii_case(file_ext)) {
+                            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let file_name_lower = file_name.to_lowercase();
+                            let mut matched = false;
+
+                            for pat in exts {
+                                let pat_lower = pat.to_lowercase();
+                                if pat_lower.starts_with('.') {
+                                    if file_name_lower.ends_with(&pat_lower) {
+                                        matched = true;
+                                        break;
+                                    }
+                                } else {
+                                    if file_name_lower.contains(&pat_lower) {
+                                        matched = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if !matched {
                                 should_include = false;
                             }
                         }

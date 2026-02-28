@@ -20,6 +20,29 @@ const showAboutModal = ref(false);
 const activeTab = ref("about");
 const appVersion = ref("");
 
+const handleTypeSelect = (e: Event) => {
+  const selectElement = e.target as HTMLSelectElement;
+  const typesToAdd = selectElement.value;
+  if (!typesToAdd) return;
+
+  const current = extensions.value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const newTypes = typesToAdd
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const uniqueSet = new Set(current);
+  newTypes.forEach((t) => uniqueSet.add(t));
+
+  extensions.value = Array.from(uniqueSet).join(", ");
+
+  // reset select
+  selectElement.value = "";
+};
+
 // Custom Modal State
 const confirmModal = ref({
   show: false,
@@ -499,7 +522,7 @@ const scanFiles = async (resetSelection = true) => {
     const exts = extensions.value
       .trim()
       .split(",")
-      .map((e) => e.trim().replace(/^\./, ""))
+      .map((e) => e.trim())
       .filter((e) => e);
 
     const result: any = await invoke("scan_directory", {
@@ -1016,11 +1039,48 @@ const executeClean = async () => {
           </div>
 
           <div class="form-group">
-            <label>指定文件格式 (逗号分隔)</label>
+            <label
+              style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+              "
+            >
+              <span>包含关键词或后缀 (逗号分隔)</span>
+              <select
+                style="
+                  width: 80px;
+                  padding: 2px 4px;
+                  font-size: 12px;
+                  border-radius: var(--radius-sm);
+                  border: 1px solid var(--border);
+                  background: var(--surface);
+                  color: var(--text-main);
+                  cursor: pointer;
+                "
+                @change="handleTypeSelect"
+              >
+                <option value="" disabled selected hidden>常用类型 ▾</option>
+                <option value=".mp4,.mov,.avi,.mkv,.wmv,.flv,.webm">
+                  视频文件
+                </option>
+                <option value=".jpg,.jpeg,.png,.gif,.bmp,.webp,.tiff,.svg">
+                  图片格式
+                </option>
+                <option value=".mp3,.wav,.aac,.flac,.ogg,.m4a">音频媒体</option>
+                <option
+                  value=".doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.txt,.md,.csv"
+                >
+                  办公文档
+                </option>
+                <option value=".zip,.rar,.7z,.tar,.gz">压缩归档</option>
+                <option value=".dmg,.pkg,.app,.exe,.msi">安装程序</option>
+              </select>
+            </label>
             <input
               type="text"
               v-model="extensions"
-              placeholder="例如: .dmg,.zip,.log"
+              placeholder="例如: AA, .dmg, .zip"
             />
           </div>
 
