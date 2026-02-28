@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Smart Cleaner",
-  "version": "1.1.9",
+  "version": "1.2.0",
   "identifier": "com.gefangshuai.smartcleaner",
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg0RUQ5MDNENUY1Mzg4QTcKUldTbmlGTmZQWkR0aEQwa0ZUdDhNRDBjMno0L05qUGdQMDhlR2FKQlpOWkcrcVJXYU5MZFB6RDYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzNzQ4MjcxMDU3Njk5MjgKUldRb21YWUZjWUoway9HQVFPTkhZUVlSMGlzSlVrb0xWTmJVOVJXanpKMXEyV1pSNDY2dHFBL3IK",
       "endpoints": [
         "https://github.com/lifedever/smart-cleaner/releases/latest/download/latest.json"
       ]
