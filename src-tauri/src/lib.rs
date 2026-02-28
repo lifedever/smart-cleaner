@@ -67,7 +67,13 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
         let mut total_size = 0;
         let mut scanned_count = 0;
 
-        let walker = WalkDir::new(&target_path).min_depth(1).into_iter();
+        let walker = WalkDir::new(&target_path)
+            .min_depth(1)
+            .into_iter()
+            .filter_entry(|e| {
+                let path_str = e.path().to_string_lossy();
+                !whitelist.contains(path_str.as_ref())
+            });
 
         for entry in walker {
             let entry = match entry {
@@ -89,11 +95,6 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
             }
 
             let path_str = path.to_string_lossy().to_string();
-
-            // Check whitelist early
-            if whitelist.contains(&path_str) {
-                continue;
-            }
 
             let metadata = match fs::symlink_metadata(path) {
                 Ok(m) => m,
