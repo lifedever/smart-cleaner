@@ -92,14 +92,18 @@ pnpm tauri build
 
 | 微信支付 | 支付宝 |
 | :---: | :---: |
-| <img src="./public/wechatpay.JPG" width="250" /> | <img src="./public/alipay.PNG" width="250" /> |
+| ![微信支付](./public/wechatpay.JPG) | ![支付宝](./public/alipay.PNG) |
 
-<br>
+---
 
 <p align="center">
-  开源不易，非常感谢您的支持与陪伴！❤️<br/>
+  开源不易，非常感谢您的支持与陪伴！❤️
+</p>
+<p align="center">
   项目官网与源码: <a href="https://github.com/lifedever/smart-cleaner">https://github.com/lifedever/smart-cleaner</a>
 </p>
+
+[回到顶部](#smart-cleaner)
 
 ---
 
