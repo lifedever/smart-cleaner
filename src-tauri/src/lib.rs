@@ -94,8 +94,6 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
                 );
             }
 
-            let path_str = path.to_string_lossy().to_string();
-
             let metadata = match fs::symlink_metadata(path) {
                 Ok(m) => m,
                 Err(_) => continue,

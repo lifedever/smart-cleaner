@@ -188,9 +188,21 @@ const handleContextMenuAddWhitelist = async () => {
   if (!fileItem) return;
 
   // 1. Instantly remove from view
-  scanResult.value = scanResult.value.filter((f) => f.id !== fileItem.id);
+  const removedIds = new Set<string>();
+  scanResult.value = scanResult.value.filter((f) => {
+    // Exact match or sub-path match (with slash to prevent /a/b matching /a/bcd)
+    const shouldRemove =
+      f.path === fileItem.path ||
+      f.path.startsWith(fileItem.path + "/") ||
+      f.path.startsWith(fileItem.path + "\\");
+    if (shouldRemove) {
+      removedIds.add(f.id);
+    }
+    return !shouldRemove;
+  });
+
   const nextSet = new Set(selectedIds.value);
-  nextSet.delete(fileItem.id);
+  removedIds.forEach((id) => nextSet.delete(id));
   selectedIds.value = nextSet;
   treeRoot.value = buildTree(scanResult.value);
 
@@ -213,7 +225,7 @@ const handleContextMenuAddWhitelist = async () => {
   // 2. Persist to whitelist
   if (!whitelist.value.includes(fileItem.path)) {
     whitelist.value.push(fileItem.path);
-    await store.value.set("whitelist", whitelist.value);
+    await store.value.set("whitelist", Array.from(whitelist.value));
     await store.value.save();
 
     await message(
@@ -230,7 +242,7 @@ const handleContextMenuAddWhitelist = async () => {
 
 const removeFromWhitelist = async (path: string) => {
   whitelist.value = whitelist.value.filter((p) => p !== path);
-  await store.value.set("whitelist", whitelist.value);
+  await store.value.set("whitelist", Array.from(whitelist.value));
   await store.value.save();
 };
 
