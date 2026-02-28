@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, message, ask } from "@tauri-apps/plugin-dialog";
 import { load } from "@tauri-apps/plugin-store";
 import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 import "./assets/styles.css";
@@ -41,10 +42,15 @@ const showConfirm = (title: string, message: string) => {
 
 const hasUpdate = ref(false);
 const updateInfo = ref<any>(null);
+const updateLoading = ref(false);
+const updateLoadingText = ref("");
 
 const checkUpdate = async (silent = false) => {
   try {
+    updateLoading.value = true;
+    updateLoadingText.value = "正在检查更新...";
     const update = await check();
+    updateLoading.value = false;
     if (update) {
       hasUpdate.value = true;
       updateInfo.value = update;
@@ -54,11 +60,12 @@ const checkUpdate = async (silent = false) => {
           { title: "发现新版本", kind: "info" },
         );
         if (yes) {
+          updateLoading.value = true;
+          updateLoadingText.value = "正在下载并安装更新...";
           await update.downloadAndInstall();
-          await message("更新安装完毕，请重启应用以生效！", {
-            title: "更新成功",
-            kind: "info",
-          });
+          updateLoadingText.value = "更新安装完毕，即将重启...";
+          await new Promise((r) => setTimeout(r, 800));
+          await relaunch();
         }
       }
     } else {
@@ -68,6 +75,7 @@ const checkUpdate = async (silent = false) => {
       }
     }
   } catch (e: any) {
+    updateLoading.value = false;
     if (!silent) {
       const errorMsg =
         e?.message || (typeof e === "string" ? e : JSON.stringify(e));
@@ -1262,6 +1270,7 @@ const executeClean = async () => {
             <button
               class="primary btn-block"
               @click="() => checkUpdate(false)"
+              :disabled="updateLoading"
               style="
                 font-size: 14px;
                 display: flex;
@@ -1271,7 +1280,8 @@ const executeClean = async () => {
                 border-radius: 8px;
               "
             >
-              🔄 检查新版本
+              <span v-if="updateLoading" class="spinner"></span>
+              {{ updateLoading ? updateLoadingText : "🔄 检查新版本" }}
             </button>
 
             <button
@@ -1453,6 +1463,35 @@ const executeClean = async () => {
           </button>
           <button class="danger" @click="confirmModal.onConfirm">确定</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Global Update Loading Overlay -->
+    <div
+      class="modal-overlay"
+      v-if="updateLoading"
+      style="
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+        color: white;
+      "
+    >
+      <div
+        class="spinner"
+        style="width: 48px; height: 48px; border-width: 4px"
+      ></div>
+      <div
+        style="
+          font-size: 16px;
+          font-weight: 500;
+          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+        "
+      >
+        {{ updateLoadingText }}
       </div>
     </div>
   </div>
@@ -1663,6 +1702,23 @@ const executeClean = async () => {
   background: #ff4d4f;
   border-radius: 50%;
   border: 1.5px solid var(--surface);
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .list-container {
