@@ -67,6 +67,7 @@ jobs:
           gh release upload "$tag_name" latest.json --clobber
 
   release-windows:
+    needs: release
     permissions:
       contents: write
     runs-on: windows-latest
