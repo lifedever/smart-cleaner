@@ -34,24 +34,35 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
-      - name: Build and Release Tauri App
-        uses: tauri-apps/tauri-action@v0
+      - name: Build macOS Assets
+        run: node scripts/release.mjs
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name || 'v1.0.3' }}
-          releaseName: "Smart Cleaner ${{ github.ref_name || 'v1.0.3' }}"
-          releaseBody: |
-            ### 📥 安装说明 (macOS)
+
+      - name: Create and Upload Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag_name="${{ github.ref_name || 'v1.1.7' }}"
+          # Create release if it doesn't exist, or update it
+          gh release create "$tag_name" \
+            --title "Smart Cleaner $tag_name" \
+            --notes "### 📥 安装说明 (macOS)
             由于此应用未经过苹果官方签名，初次运行可能会提示“无法验证开发者”。
             请在终端执行以下命令解除安全限制：
+            
+            \`\`\`bash
+            sudo xattr -rd com.apple.quarantine \"/Applications/Smart Cleaner.app\"
+            \`\`\`
+            执行后即可正常打开。" \
+            || echo "Release already exists, uploading assets..."
 
-            ```bash
-            sudo xattr -rd com.apple.quarantine "/Applications/Smart Cleaner.app"
-            ```
-            执行后即可正常打开。
-          releaseDraft: false
-          prerelease: false
-          args: --target aarch64-apple-darwin --target x86_64-apple-darwin
+          # Upload all DMGs, updater bundles, and the consolidated latest.json
+          gh release upload "$tag_name" \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/updater/*.tar.gz \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/updater/*.tar.gz \
+            latest.json \
+            --clobber
