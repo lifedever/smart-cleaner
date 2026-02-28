@@ -6,6 +6,7 @@ import { open, message, ask } from "@tauri-apps/plugin-dialog";
 import { load } from "@tauri-apps/plugin-store";
 import { check } from "@tauri-apps/plugin-updater";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getVersion } from "@tauri-apps/api/app";
 import "./assets/styles.css";
 
 // Store
@@ -14,6 +15,7 @@ const whitelist = ref<string[]>([]);
 const showWhitelistModal = ref(false);
 const showAboutModal = ref(false);
 const activeTab = ref("about");
+const appVersion = ref("");
 
 // Custom Modal State
 const confirmModal = ref({
@@ -118,6 +120,11 @@ async function initStore() {
 }
 
 onMounted(async () => {
+  try {
+    appVersion.value = await getVersion();
+  } catch (e) {
+    console.error("Failed to get version:", e);
+  }
   await initStore();
   // Auto check update once a day
   if (store.value) {
@@ -1223,6 +1230,17 @@ const executeClean = async () => {
           </h2>
           <p
             style="
+              margin: 0 0 16px 0;
+              color: var(--text-muted);
+              font-size: 13px;
+              font-family: monospace;
+              opacity: 0.8;
+            "
+          >
+            v{{ appVersion }}
+          </p>
+          <p
+            style="
               margin: 0 0 32px 0;
               color: var(--text-muted);
               font-size: 14px;
@@ -1355,7 +1373,18 @@ const executeClean = async () => {
 
     <!-- App Footer -->
     <footer class="app-footer">
-      <div style="font-weight: 500; opacity: 0.8">Smart Cleaner</div>
+      <div
+        style="
+          font-weight: 500;
+          opacity: 0.8;
+          display: flex;
+          gap: 8px;
+          align-items: center;
+        "
+      >
+        Smart Cleaner
+        <span style="font-size: 11px; opacity: 0.5">v{{ appVersion }}</span>
+      </div>
       <div style="display: flex; gap: 16px">
         <button
           class="btn-text"
@@ -1386,7 +1415,7 @@ const executeClean = async () => {
             position: relative;
           "
         >
-          ℹ️ 关于中心
+          ℹ️ 关于
           <span v-if="hasUpdate" class="update-dot" title="有新版本可用"></span>
         </button>
       </div>
