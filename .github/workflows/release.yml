@@ -65,3 +65,50 @@ jobs:
 
           # Upload the consolidated updater JSON
           gh release upload "$tag_name" latest.json --clobber
+
+  release-windows:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Windows Assets
+        run: pnpm tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: "dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5SWZtZDNqWnZXdFFPZnl0UzM0US9XMGRMMUpLeTUyYk9qaGc3d283TjgzOEFBQkFBQUFBQUFBQUFBQUlBQUFBQVczamV5amdWZlpkRlZST1BDVGdaZjAxU1pUWjFwOThXV0I1SnFQUW94eDVtdmxVZ1dDampwbWdkOTg5NXp2SHdrTU1SUGNGSm5yeWV1cDFFU29IU3kvTDNRWm9UaHYyT2NsZ2wrYXFCK05nMmpGd2t1RFRxZW9uRkJnSVBUWjNpQjllOG01azd5bFE9Cg=="
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "sc2026"
+
+      - name: Upload Release Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          tag_name="${{ github.ref_name || 'v1.1.7' }}"
+          # Get all generated setups (msi and exe)
+          for file in src-tauri/target/release/bundle/msi/*.msi src-tauri/target/release/bundle/nsis/*.exe; do
+            if [ -f "$file" ]; then
+              gh release upload "$tag_name" "$file" --clobber || true
+            fi
+          done
