@@ -54,6 +54,6 @@ jobs:
             sudo xattr -rd com.apple.quarantine "/Applications/Smart Cleaner.app"
             ```
             执行后即可正常打开。
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}

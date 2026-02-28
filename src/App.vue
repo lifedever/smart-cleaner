@@ -81,9 +81,21 @@ const expandAll = () => {
   collapsedDirs.value = new Set();
 };
 
+const getAllDirectoryIds = (node: any): string[] => {
+  const ids: string[] = [];
+  if (node.isDir) {
+    if (node.id !== "root") ids.push(node.id);
+    node.children.forEach((child: any) => {
+      ids.push(...getAllDirectoryIds(child));
+    });
+  }
+  return ids;
+};
+
 const collapseAll = () => {
-  const allDirs = scanResult.value.filter((f) => f.is_dir).map((f) => f.id);
-  collapsedDirs.value = new Set(allDirs);
+  const tree = buildTree(scanResult.value);
+  const allDirIds = getAllDirectoryIds(tree);
+  collapsedDirs.value = new Set(allDirIds);
 };
 
 const openGithub = async () => {
@@ -521,8 +533,9 @@ const getFileIcon = (fileName: string, isDir: boolean) => {
 
 const treeData = computed(() => {
   if (scanResult.value.length === 0) return [];
-  // Ensure we rebuild when sortOrder changes
+  // Ensure we rebuild when sortOrder or collapsedDirs changes
   void sortOrder.value;
+  void collapsedDirs.value;
   const tree = buildTree(scanResult.value);
   return flattenTree(tree);
 });
