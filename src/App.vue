@@ -220,6 +220,9 @@ const extensions = ref("");
 const includeEmptyDirs = ref(true);
 
 const collapsedDirs = ref<Set<string>>(new Set());
+const treeRoot = ref<any>(null);
+const directoryTotalCount = new Map<string, number>();
+const directorySelectedCount = ref<Map<string, number>>(new Map());
 
 const buildTree = (files: any[]) => {
   const root: any = {
@@ -229,7 +232,10 @@ const buildTree = (files: any[]) => {
     children: new Map(),
     isDir: true,
     size: 0,
+    fileIds: [], // Direct files
   };
+
+  directoryTotalCount.clear();
 
   files.forEach((file) => {
     const relativePath = file.path
@@ -245,11 +251,15 @@ const buildTree = (files: any[]) => {
 
       if (!current.children.has(part)) {
         if (isLast) {
-          current.children.set(part, {
+          const node = {
             ...file,
             isDir: file.is_dir,
             children: new Map(),
-          });
+          };
+          current.children.set(part, node);
+          if (!file.is_dir) {
+            current.fileIds.push(file.id);
+          }
         } else {
           current.children.set(part, {
             id: `dir-${fullPath}`,
@@ -258,6 +268,7 @@ const buildTree = (files: any[]) => {
             isDir: true,
             size: 0,
             children: new Map(),
+            fileIds: [],
           });
         }
       }
@@ -265,18 +276,27 @@ const buildTree = (files: any[]) => {
     });
   });
 
-  // Second pass: Calculate recursive sizes for directories
-  const calculateSizes = (node: any) => {
-    if (!node.isDir) return node.size;
-    let total = 0;
-    node.children.forEach((child: any) => {
-      total += calculateSizes(child);
-    });
-    node.size = total;
-    return total;
-  };
-  calculateSizes(root);
+  // Calculate sizes and recursive counts
+  const finalizeStats = (node: any) => {
+    let sizeTotal = 0;
+    let countTotal = 0;
 
+    if (!node.isDir) {
+      return { size: node.size, count: 1 };
+    }
+
+    node.children.forEach((child: any) => {
+      const stats = finalizeStats(child);
+      sizeTotal += stats.size;
+      countTotal += stats.count;
+    });
+
+    node.size = sizeTotal;
+    directoryTotalCount.set(node.id, countTotal);
+    return { size: sizeTotal, count: countTotal };
+  };
+
+  finalizeStats(root);
   return root;
 };
 
@@ -401,9 +421,22 @@ const scanFiles = async () => {
     scanResult.value = result.files;
     totalSize.value = result.total_size;
 
-    collapsedDirs.value.clear();
-    // Select all by default
-    scanResult.value.forEach((f) => selectedIds.value.add(f.id));
+    collapsedDirs.value = new Set();
+    treeRoot.value = buildTree(scanResult.value);
+
+    // Initial selected state
+    const initialSelection = new Set<string>();
+    const selCountMap = new Map<string, number>();
+    scanResult.value.forEach((f) => {
+      initialSelection.add(f.id);
+    });
+
+    // Helper to fill selection map at start
+    directoryTotalCount.forEach((count, dirId) => {
+      selCountMap.set(dirId, count);
+    });
+    directorySelectedCount.value = selCountMap;
+    selectedIds.value = initialSelection;
   } catch (err: any) {
     await message(`扫描失败: ${err}`, { title: "错误", kind: "error" });
   } finally {
@@ -416,29 +449,93 @@ const scanFiles = async () => {
   }
 };
 
+// Removed unused helpers
+
 const toggleSelection = (item: any) => {
+  const alreadySelected = isAllSelected(item);
   const nextSet = new Set(selectedIds.value);
+  const selCountMap = new Map(directorySelectedCount.value);
 
-  // Decide action based on current computed "all selected" state
-  const alreadyAllSelected = isAllSelected(item);
+  const affectedFiles: string[] = [];
+  const affectedDirs: string[] = [];
 
-  const affectedIds: string[] = [];
-  scanResult.value.forEach((f) => {
-    // Match exact path OR any sub-path (ensuring we don't match "folder2" with "folder")
-    if (
-      f.path === item.path ||
-      f.path.startsWith(item.path + "/") ||
-      f.path.startsWith(item.path + "\\")
-    ) {
-      affectedIds.push(f.id);
+  const collect = (node: any) => {
+    if (!node.isDir) {
+      affectedFiles.push(node.id);
+    } else {
+      affectedDirs.push(node.id);
+      node.children.forEach(collect);
     }
+  };
+
+  // Optimization: Find by path segments for O(depth) instead of O(N)
+  const findNodeByPath = (targetPath: string) => {
+    const parts = targetPath
+      .replace(targetDir.value, "")
+      .replace(/^[/\\]/, "")
+      .split(/[/\\]/)
+      .filter((p) => p);
+    let current = treeRoot.value;
+    if (targetPath === targetDir.value) return current;
+    for (const part of parts) {
+      if (!current || !current.children.has(part)) return null;
+      current = current.children.get(part);
+    }
+    return current;
+  };
+
+  const node = findNodeByPath(item.path);
+  if (!node) return;
+
+  collect(node);
+
+  const isAdding = !alreadySelected;
+
+  affectedFiles.forEach((id) => {
+    if (isAdding) nextSet.add(id);
+    else nextSet.delete(id);
   });
 
-  affectedIds.forEach((id) => {
-    if (alreadyAllSelected) nextSet.delete(id);
-    else nextSet.add(id);
+  // Update selection counts for all affected directories AND their parents
+  affectedDirs.forEach((dirId) => {
+    if (isAdding) selCountMap.set(dirId, directoryTotalCount.get(dirId) || 0);
+    else selCountMap.set(dirId, 0);
   });
 
+  // Update parents
+  const updateParents = (path: string) => {
+    const parentPath = path.substring(0, path.lastIndexOf("/"));
+    if (parentPath.startsWith(targetDir.value)) {
+      const parentNode = findNodeByPath(parentPath);
+      if (parentNode) {
+        let count = 0;
+        parentNode.children.forEach((child: any) => {
+          if (!child.isDir) {
+            if (nextSet.has(child.id)) count++;
+          } else {
+            count += selCountMap.get(child.id) || 0;
+          }
+        });
+        selCountMap.set(parentNode.id, count);
+        updateParents(parentPath);
+      }
+    } else if (path !== targetDir.value) {
+      // Root case
+      let count = 0;
+      treeRoot.value.children.forEach((child: any) => {
+        if (!child.isDir) {
+          if (nextSet.has(child.id)) count++;
+        } else {
+          count += selCountMap.get(child.id) || 0;
+        }
+      });
+      selCountMap.set("root", count);
+    }
+  };
+
+  updateParents(item.path);
+
+  directorySelectedCount.value = selCountMap;
   selectedIds.value = nextSet;
 };
 
@@ -532,49 +629,25 @@ const getFileIcon = (fileName: string, isDir: boolean) => {
 };
 
 const treeData = computed(() => {
-  if (scanResult.value.length === 0) return [];
+  if (!treeRoot.value) return [];
   // Ensure we rebuild when sortOrder or collapsedDirs changes
   void sortOrder.value;
   void collapsedDirs.value;
-  const tree = buildTree(scanResult.value);
-  return flattenTree(tree);
+  return flattenTree(treeRoot.value);
 });
 
 const isPartiallySelected = (item: any) => {
   if (!item.isDir) return false;
-  let hasSelected = false;
-  let hasUnselected = false;
-
-  scanResult.value.forEach((f) => {
-    if (
-      f.path === item.path ||
-      f.path.startsWith(item.path + "/") ||
-      f.path.startsWith(item.path + "\\")
-    ) {
-      if (selectedIds.value.has(f.id)) hasSelected = true;
-      else hasUnselected = true;
-    }
-  });
-
-  return hasSelected && hasUnselected;
+  const selected = directorySelectedCount.value.get(item.id) || 0;
+  const total = directoryTotalCount.get(item.id) || 0;
+  return selected > 0 && selected < total;
 };
 
 const isAllSelected = (item: any) => {
   if (!item.isDir) return selectedIds.value.has(item.id);
-
-  let all = true;
-  let count = 0;
-  scanResult.value.forEach((f) => {
-    if (
-      f.path === item.path ||
-      f.path.startsWith(item.path + "/") ||
-      f.path.startsWith(item.path + "\\")
-    ) {
-      count++;
-      if (!selectedIds.value.has(f.id)) all = false;
-    }
-  });
-  return count > 0 && all;
+  const selected = directorySelectedCount.value.get(item.id) || 0;
+  const total = directoryTotalCount.get(item.id) || 1; // avoid /0
+  return selected === total;
 };
 
 const selectedSize = computed(() => {
@@ -817,6 +890,7 @@ const executeClean = async () => {
               class="list-body"
               :items="treeData"
               :item-size="34"
+              :buffer="200"
               key-field="id"
               v-slot="{ item }"
             >
