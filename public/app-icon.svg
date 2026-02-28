@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024px" height="1024px" viewBox="0 0 1024 1024" version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>app-icon</title>
+    <g id="app-icon" stroke="none" fill="none" fill-rule="evenodd" stroke-width="1">
+        <g id="编组" transform="translate(100, 100)">
+            <rect id="矩形" fill="#000000" x="0" y="0" width="824" height="824" rx="175"></rect>
+            <polygon id="路径" fill="#FFFFFF" points="412 237.114 442.04 381.958 586.885 412 442.04 442.04 412 586.885 381.958 442.04 237.114 412 381.958 381.958"></polygon>
+            <circle id="椭圆形" fill="#FFFFFF" opacity="0.8" cx="565.427" cy="291.833" r="36.48"></circle>
+            <circle id="椭圆形" fill="#FFFFFF" opacity="0.6" cx="291.833" cy="532.167" r="27.896"></circle>
+            <path d="M0,182.395 C0,81.666 81.666,0 182.395,0 L641.605,0 C742.334,0 824,81.666 824,182.395 L824,206 C824,206 593.71,270.375 412,270.375 C230.29,270.375 0,206 0,206 L0,182.395 Z" id="路径" fill="#FFFFFF" opacity="0.1"></path>
+        </g>
+    </g>
+</svg>

@@ -72,6 +72,23 @@ pnpm tauri build
 
 ---
 
+## ✨ 支持与赞助 (Sponsor)
+
+如果您觉得 Smart Cleaner 对您有帮助，为您的电脑清理了大量冗余空间，欢迎请作者喝杯奶茶！您的赞助将是我前进的动力。
+
+| 微信支付 | 支付宝 |
+| :---: | :---: |
+| <img src="./public/wechatpay.JPG" width="250" /> | <img src="./public/alipay.PNG" width="250" /> |
+
+<br>
+
+<p align="center">
+  开源不易，非常感谢您的支持与陪伴！❤️<br/>
+  项目官网与源码: <a href="https://github.com/lifedever/smart-cleaner">https://github.com/lifedever/smart-cleaner</a>
+</p>
+
+---
+
 ## 📝 License
 
 本项目基于 MIT License 协议开源。

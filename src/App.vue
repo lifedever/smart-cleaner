@@ -1,8 +1,163 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, nextTick, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, message, ask } from "@tauri-apps/plugin-dialog";
+import { load } from "@tauri-apps/plugin-store";
+import { check } from "@tauri-apps/plugin-updater";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./assets/styles.css";
+
+// Store
+const store = ref<any>(null);
+const whitelist = ref<string[]>([]);
+const showWhitelistModal = ref(false);
+const showAboutModal = ref(false);
+const activeTab = ref("about");
+
+// Custom Modal State
+const confirmModal = ref({
+  show: false,
+  title: "",
+  message: "",
+  onConfirm: () => {},
+});
+
+const showConfirm = (title: string, message: string) => {
+  return new Promise<boolean>((resolve) => {
+    confirmModal.value = {
+      show: true,
+      title,
+      message,
+      onConfirm: () => {
+        confirmModal.value.show = false;
+        resolve(true);
+      },
+    };
+  });
+};
+
+const checkUpdate = async () => {
+  try {
+    const update = await check();
+    if (update) {
+      const yes = await ask(
+        `发现新版本 ${update.version}，是否更新？\n${update.body || ""}`,
+        { title: "发现新版本", kind: "info" },
+      );
+      if (yes) {
+        await update.downloadAndInstall();
+        await message("更新安装完毕，请重启应用以生效！", {
+          title: "更新成功",
+          kind: "info",
+        });
+      }
+    } else {
+      await message("当前已经是最新版本", { title: "检查更新" });
+    }
+  } catch (e: any) {
+    await message(`检查更新失败: ${e.message}`, {
+      title: "错误",
+      kind: "error",
+    });
+  }
+};
+
+const openGithub = async () => {
+  await openUrl("https://github.com/lifedever/smart-cleaner");
+};
+
+const initStore = async () => {
+  store.value = await load("whitelist.json");
+  const stored = await store.value.get("paths");
+  if (stored && Array.isArray(stored)) {
+    whitelist.value = stored;
+  } else {
+    await store.value.set("paths", []);
+    await store.value.save();
+  }
+};
+
+onMounted(async () => {
+  initStore();
+  window.addEventListener("click", () => {
+    if (contextMenu.value.show) {
+      contextMenu.value.show = false;
+    }
+  });
+
+  _unlistenClean.value = await listen("clean-progress", (event: any) => {
+    cleanProgress.value = {
+      total: event.payload.total,
+      current: event.payload.current,
+      path: event.payload.current_path,
+    };
+  });
+});
+
+const isCleaning = ref(false);
+const cleanProgress = ref({ total: 0, current: 0, path: "" });
+const _unlistenClean = ref<any>(null);
+
+const contextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  item: null as any,
+});
+
+const showContextMenu = (e: MouseEvent, item: any) => {
+  contextMenu.value = {
+    show: true,
+    x: e.clientX,
+    y: e.clientY,
+    item,
+  };
+};
+
+const handleContextMenuAddWhitelist = async () => {
+  const fileItem = contextMenu.value.item;
+  contextMenu.value.show = false;
+  if (!fileItem) return;
+
+  // 1. Instantly remove from view
+  scanResult.value = scanResult.value.filter((f) => f.id !== fileItem.id);
+  const nextSet = new Set(selectedIds.value);
+  nextSet.delete(fileItem.id);
+  selectedIds.value = nextSet;
+
+  // 2. Persist to whitelist
+  if (!whitelist.value.includes(fileItem.path)) {
+    whitelist.value.push(fileItem.path);
+    await store.value.set("paths", whitelist.value);
+    await store.value.save();
+
+    await message(
+      `「${fileItem.name}」已加入白名单，该记录已从本次扫描列表中移除。`,
+      { title: "操作成功", kind: "info" },
+    );
+  } else {
+    await message(`「${fileItem.name}」已在白名单中，该记录已从列表中移除。`, {
+      title: "提示",
+      kind: "info",
+    });
+  }
+};
+
+const removeFromWhitelist = async (path: string) => {
+  whitelist.value = whitelist.value.filter((p) => p !== path);
+  await store.value.set("paths", whitelist.value);
+  await store.value.save();
+};
+
+const clearWhitelist = async () => {
+  const confirm = await showConfirm("清空确认", "确定要清空所有白名单记录吗？");
+  if (confirm) {
+    whitelist.value = [];
+    await store.value.set("paths", []);
+    await store.value.save();
+  }
+};
 
 // Form State
 const targetDir = ref("");
@@ -10,10 +165,116 @@ const minSizeMB = ref<number | "">("");
 const createdBeforeDays = ref<number | "">("");
 const modifiedBeforeDays = ref<number | "">("");
 const extensions = ref("");
-const includeEmptyDirs = ref(false);
+const includeEmptyDirs = ref(true);
+
+const collapsedDirs = ref<Set<string>>(new Set());
+
+const buildTree = (files: any[]) => {
+  const root: any = {
+    id: "root",
+    name: "Root",
+    path: targetDir.value,
+    children: new Map(),
+    isDir: true,
+    size: 0,
+  };
+
+  files.forEach((file) => {
+    const relativePath = file.path
+      .replace(targetDir.value, "")
+      .replace(/^[/\\]/, "");
+    const parts = relativePath.split(/[/\\]/).filter((p: string) => p);
+
+    let current = root;
+    parts.forEach((part: string, index: number) => {
+      const isLast = index === parts.length - 1;
+      const fullPath =
+        targetDir.value + "/" + parts.slice(0, index + 1).join("/");
+
+      if (!current.children.has(part)) {
+        if (isLast) {
+          current.children.set(part, {
+            ...file,
+            isDir: file.is_dir,
+            children: new Map(),
+          });
+        } else {
+          current.children.set(part, {
+            id: `dir-${fullPath}`,
+            name: part,
+            path: fullPath,
+            isDir: true,
+            size: 0,
+            children: new Map(),
+          });
+        }
+      }
+      current = current.children.get(part);
+    });
+  });
+
+  // Second pass: Calculate recursive sizes for directories
+  const calculateSizes = (node: any) => {
+    if (!node.isDir) return node.size;
+    let total = 0;
+    node.children.forEach((child: any) => {
+      total += calculateSizes(child);
+    });
+    node.size = total;
+    return total;
+  };
+  calculateSizes(root);
+
+  return root;
+};
+
+const flattenTree = (node: any, depth = -1): any[] => {
+  const list: any[] = [];
+  if (depth >= 0) {
+    list.push({ ...node, depth });
+  }
+
+  if (node.isDir && (depth === -1 || !collapsedDirs.value.has(node.id))) {
+    // Sort siblings based on global sortOrder
+    const children = Array.from(node.children.values()).sort(
+      (a: any, b: any) => {
+        if (sortOrder.value === "none") {
+          // Default: dirs first, then name
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        }
+
+        const modifier = sortOrder.value === "asc" ? 1 : -1;
+        // Keep dirs grouped at top or just follow size? Typically tree views group dirs.
+        // Let's group dirs but sort both groups by size.
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return (a.size - b.size) * modifier;
+      },
+    );
+
+    children.forEach((child: any) => {
+      list.push(...flattenTree(child, depth + 1));
+    });
+  }
+  return list;
+};
+
+const toggleDir = (id: string, e?: Event) => {
+  if (e) e.stopPropagation();
+  const nextSet = new Set(collapsedDirs.value);
+  if (nextSet.has(id)) {
+    nextSet.delete(id);
+  } else {
+    nextSet.add(id);
+  }
+  collapsedDirs.value = nextSet;
+};
 
 // Results State
 const isScanning = ref(false);
+const scanProgressPath = ref("");
+const _unlistenProgress = ref<any>(null);
+
 const scanResult = ref<any[]>([]);
 const totalSize = ref(0);
 const selectedIds = ref<Set<String>>(new Set());
@@ -25,10 +286,6 @@ const selectDirectory = async () => {
   });
   if (result) {
     targetDir.value = result as string;
-    // Auto-scan when directory changes
-    if (targetDir.value) {
-      scanFiles();
-    }
   }
 };
 
@@ -46,10 +303,21 @@ const scanFiles = async () => {
     return;
   }
 
+  scanProgressPath.value = "正在初始化扫描...";
+
+  // Setup listener for progress
+  if (!_unlistenProgress.value) {
+    _unlistenProgress.value = await listen("scan-progress", (event: any) => {
+      scanProgressPath.value = event.payload.current_path;
+    });
+  }
+
   isScanning.value = true;
   scanResult.value = [];
   selectedIds.value.clear();
   totalSize.value = 0;
+
+  await nextTick();
 
   try {
     const now = Date.now();
@@ -74,35 +342,196 @@ const scanFiles = async () => {
         modified_before_ms: modifiedBeforeMs,
         extensions: exts.length > 0 ? exts : null,
         include_empty_dirs: includeEmptyDirs.value,
+        whitelist: whitelist.value,
       },
     });
 
     scanResult.value = result.files;
     totalSize.value = result.total_size;
 
+    collapsedDirs.value.clear();
     // Select all by default
     scanResult.value.forEach((f) => selectedIds.value.add(f.id));
   } catch (err: any) {
     await message(`扫描失败: ${err}`, { title: "错误", kind: "error" });
   } finally {
     isScanning.value = false;
+    scanProgressPath.value = "";
+    if (_unlistenProgress.value) {
+      _unlistenProgress.value();
+      _unlistenProgress.value = null;
+    }
   }
 };
 
-const toggleSelection = (id: string) => {
-  if (selectedIds.value.has(id)) {
-    selectedIds.value.delete(id);
-  } else {
-    selectedIds.value.add(id);
-  }
+const toggleSelection = (item: any) => {
+  const nextSet = new Set(selectedIds.value);
+
+  // Decide action based on current computed "all selected" state
+  const alreadyAllSelected = isAllSelected(item);
+
+  const affectedIds: string[] = [];
+  scanResult.value.forEach((f) => {
+    // Match exact path OR any sub-path (ensuring we don't match "folder2" with "folder")
+    if (
+      f.path === item.path ||
+      f.path.startsWith(item.path + "/") ||
+      f.path.startsWith(item.path + "\\")
+    ) {
+      affectedIds.push(f.id);
+    }
+  });
+
+  affectedIds.forEach((id) => {
+    if (alreadyAllSelected) nextSet.delete(id);
+    else nextSet.add(id);
+  });
+
+  selectedIds.value = nextSet;
 };
 
 const toggleSelectAll = () => {
   if (selectedIds.value.size === scanResult.value.length) {
-    selectedIds.value.clear();
+    selectedIds.value = new Set();
   } else {
-    scanResult.value.forEach((f) => selectedIds.value.add(f.id));
+    selectedIds.value = new Set(scanResult.value.map((f) => f.id));
   }
+};
+
+const sortOrder = ref<"none" | "asc" | "desc">("desc");
+
+const toggleSort = () => {
+  if (sortOrder.value === "none") sortOrder.value = "desc";
+  else if (sortOrder.value === "desc") sortOrder.value = "asc";
+  else sortOrder.value = "none";
+};
+
+const getFileIcon = (fileName: string, isDir: boolean) => {
+  if (isDir) return "📁";
+
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+
+  const iconMap: Record<string, string> = {
+    // Images
+    png: "🖼️",
+    jpg: "🖼️",
+    jpeg: "🖼️",
+    gif: "🖼️",
+    svg: "🖼️",
+    webp: "🖼️",
+    bmp: "🖼️",
+    // Documents
+    pdf: "📕",
+    doc: "📘",
+    docx: "📘",
+    xls: "📗",
+    xlsx: "📗",
+    csv: "📗",
+    ppt: "📙",
+    pptx: "📙",
+    txt: "📄",
+    md: "📝",
+    rtf: "📄",
+    // Code
+    html: "🌐",
+    css: "🎨",
+    js: "📜",
+    ts: "📜",
+    vue: "🟩",
+    jsx: "⚛️",
+    tsx: "⚛️",
+    json: "📋",
+    xml: "📋",
+    yaml: "📋",
+    yml: "📋",
+    py: "🐍",
+    java: "☕",
+    c: "🇨",
+    cpp: "🇨",
+    cs: "#️⃣",
+    go: "🐹",
+    rs: "🦀",
+    rb: "💎",
+    php: "🐘",
+    sh: "🐚",
+    bash: "🐚",
+    // Archives & Executables
+    zip: "📦",
+    rar: "📦",
+    "7z": "📦",
+    tar: "📦",
+    gz: "📦",
+    dmg: "💿",
+    iso: "💿",
+    exe: "🪟",
+    app: "📱",
+    apk: "📱",
+    // Media
+    mp4: "🎬",
+    mkv: "🎬",
+    avi: "🎬",
+    mov: "🎬",
+    wmv: "🎬",
+    flv: "🎬",
+    webm: "🎬",
+    mp3: "🎵",
+    wav: "🎵",
+    ogg: "🎵",
+    flac: "🎵",
+    m4a: "🎵",
+    // Misc
+    sqlite: "🗄️",
+    db: "🗄️",
+    sql: "🗄️",
+    log: "📋",
+  };
+
+  return iconMap[ext] || "📄"; // default fallback
+};
+
+const treeData = computed(() => {
+  if (scanResult.value.length === 0) return [];
+  // Ensure we rebuild when sortOrder changes
+  void sortOrder.value;
+  const tree = buildTree(scanResult.value);
+  return flattenTree(tree);
+});
+
+const isPartiallySelected = (item: any) => {
+  if (!item.isDir) return false;
+  let hasSelected = false;
+  let hasUnselected = false;
+
+  scanResult.value.forEach((f) => {
+    if (
+      f.path === item.path ||
+      f.path.startsWith(item.path + "/") ||
+      f.path.startsWith(item.path + "\\")
+    ) {
+      if (selectedIds.value.has(f.id)) hasSelected = true;
+      else hasUnselected = true;
+    }
+  });
+
+  return hasSelected && hasUnselected;
+};
+
+const isAllSelected = (item: any) => {
+  if (!item.isDir) return selectedIds.value.has(item.id);
+
+  let all = true;
+  let count = 0;
+  scanResult.value.forEach((f) => {
+    if (
+      f.path === item.path ||
+      f.path.startsWith(item.path + "/") ||
+      f.path.startsWith(item.path + "\\")
+    ) {
+      count++;
+      if (!selectedIds.value.has(f.id)) all = false;
+    }
+  });
+  return count > 0 && all;
 };
 
 const selectedSize = computed(() => {
@@ -114,9 +543,9 @@ const selectedSize = computed(() => {
 const executeClean = async () => {
   if (selectedIds.value.size === 0) return;
 
-  const confirm = await ask(
+  const confirm = await showConfirm(
+    "二次确认",
     `确认将选中的 ${selectedIds.value.size} 个文件（共计释放 ${formatSize(selectedSize.value)}）移入回收站吗？\n可在回收站进行恢复。`,
-    { title: "二次确认", kind: "warning" },
   );
 
   if (confirm) {
@@ -124,212 +553,733 @@ const executeClean = async () => {
       .filter((f) => selectedIds.value.has(f.id))
       .map((f) => f.path);
 
+    isCleaning.value = true;
+    cleanProgress.value = { total: pathsToDelete.length, current: 0, path: "" };
+
     try {
-      await invoke("move_to_trash", { paths: pathsToDelete });
-      await message("清理完成！已移入废纸篓。", {
-        title: "成功",
-        kind: "info",
+      await invoke("move_to_trash", {
+        paths: pathsToDelete,
+        targetDir: targetDir.value,
       });
-      // Rescan left files
+
+      // Delay slightly for UX
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
+      // 成功后重新触发一遍扫描以刷新列表
       scanFiles();
     } catch (err: any) {
-      await message(`清理过程中出现错误: ${err}`, {
-        title: "错误",
-        kind: "error",
+      await message(`${err}`, {
+        title: "部分操作失败",
+        kind: "warning",
       });
+      // 即便有部分失败，也可以刷新一下列表看看剩下哪些
+      scanFiles();
+    } finally {
+      isCleaning.value = false;
     }
   }
 };
 </script>
 
 <template>
-  <div class="layout">
-    <!-- Sidebar Panel -->
-    <aside class="sidebar">
-      <div class="header">
-        <div class="logo-box">
-          <div class="icon-clean">✨</div>
-          <h2>Smart Cleaner</h2>
-        </div>
-        <p class="subtitle">智能释放您的 Mac 空间</p>
-      </div>
-
-      <div class="card form-section">
-        <h3>清理目标</h3>
-        <div class="dir-selector">
-          <input
-            type="text"
-            v-model="targetDir"
-            placeholder="点击选择或输入绝对路径"
-            readonly
-            @click="selectDirectory"
-          />
-          <button @click="selectDirectory" class="btn-icon">📁</button>
-        </div>
-      </div>
-
-      <div class="card form-section">
-        <h3>筛选属性</h3>
-
-        <div class="form-group">
-          <label>文件体积筛选</label>
-          <div class="input-with-unit">
-            <span>大于</span>
-            <input type="number" v-model="minSizeMB" placeholder="未设置" />
-            <span>MB</span>
+  <div class="app-wrapper">
+    <div class="layout">
+      <!-- Sidebar Panel -->
+      <aside class="sidebar">
+        <div class="header">
+          <div class="logo-box">
+            <div class="icon-clean">✨</div>
+            <h2>Smart Cleaner</h2>
           </div>
+          <p class="subtitle">智能释放您的 Mac 空间</p>
         </div>
 
-        <div class="form-group">
-          <label>创建时间筛选</label>
-          <div class="input-with-unit">
-            <span>早于</span>
+        <div class="card form-section">
+          <h3>清理目标</h3>
+          <div class="dir-selector">
             <input
-              type="number"
-              v-model="createdBeforeDays"
-              placeholder="未设置"
+              type="text"
+              v-model="targetDir"
+              placeholder="点击选择或输入绝对路径"
+              readonly
+              @click="selectDirectory"
             />
-            <span>天</span>
+            <button @click="selectDirectory" class="btn-icon">📁</button>
           </div>
         </div>
 
-        <div class="form-group">
-          <label>修改时间筛选</label>
-          <div class="input-with-unit">
-            <span>早于</span>
-            <input
-              type="number"
-              v-model="modifiedBeforeDays"
-              placeholder="未设置"
-            />
-            <span>天</span>
+        <div class="card form-section">
+          <h3>筛选属性</h3>
+
+          <div class="form-group">
+            <label>文件体积筛选</label>
+            <div class="input-with-unit">
+              <span>大于</span>
+              <input type="number" v-model="minSizeMB" placeholder="未设置" />
+              <span>MB</span>
+            </div>
           </div>
-        </div>
 
-        <div class="form-group">
-          <label>指定文件格式 (逗号分隔)</label>
-          <input
-            type="text"
-            v-model="extensions"
-            placeholder="例如: .dmg,.zip,.log"
-          />
-        </div>
-
-        <div class="form-group" style="margin-top: 12px">
-          <label class="checkbox-ctrl">
-            <input type="checkbox" v-model="includeEmptyDirs" />
-            包含并清理空目录
-          </label>
-        </div>
-      </div>
-
-      <div class="action-footer">
-        <button
-          class="primary btn-block scan-btn"
-          @click="scanFiles"
-          :disabled="isScanning || !targetDir"
-        >
-          {{ isScanning ? "正在深度扫描..." : "开始扫描并预览" }}
-        </button>
-      </div>
-    </aside>
-
-    <!-- Main Content Panel -->
-    <main class="main-content">
-      <header class="main-header">
-        <h3>文件预览列表</h3>
-        <div class="stats" v-if="scanResult.length > 0">
-          <span class="badge">共 {{ scanResult.length }} 项</span>
-          <span class="badge highlight"
-            >可释放 {{ formatSize(totalSize) }}</span
-          >
-        </div>
-      </header>
-
-      <div class="list-container">
-        <div
-          v-if="targetDir && !isScanning && scanResult.length === 0"
-          class="empty-state"
-        >
-          <div class="empty-icon">🍃</div>
-          <p>太棒了，目前该目录下没有符合清理条件的垃圾文件！</p>
-        </div>
-        <div v-else-if="!targetDir" class="empty-state">
-          <div class="empty-icon">👈</div>
-          <p>请先在左侧选择要扫描的目录并配置规则</p>
-        </div>
-        <div v-else-if="isScanning" class="empty-state">
-          <div class="spinner"></div>
-          <p>努力扫描中...</p>
-        </div>
-
-        <div v-else class="file-list">
-          <div class="list-header">
-            <label class="checkbox-ctrl">
+          <div class="form-group">
+            <label>创建时间筛选</label>
+            <div class="input-with-unit">
+              <span>早于</span>
               <input
-                type="checkbox"
-                :checked="selectedIds.size === scanResult.length"
-                @change="toggleSelectAll"
+                type="number"
+                v-model="createdBeforeDays"
+                placeholder="未设置"
               />
-              全选
-            </label>
-            <span class="col-name">名称</span>
-            <span class="col-size">大小</span>
+              <span>天</span>
+            </div>
           </div>
 
-          <div class="list-body">
-            <div
-              v-for="item in scanResult"
-              :key="item.id"
-              class="list-item"
-              :class="{ selected: selectedIds.has(item.id) }"
-              @click="toggleSelection(item.id)"
+          <div class="form-group">
+            <label>修改时间筛选</label>
+            <div class="input-with-unit">
+              <span>早于</span>
+              <input
+                type="number"
+                v-model="modifiedBeforeDays"
+                placeholder="未设置"
+              />
+              <span>天</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>指定文件格式 (逗号分隔)</label>
+            <input
+              type="text"
+              v-model="extensions"
+              placeholder="例如: .dmg,.zip,.log"
+            />
+          </div>
+
+          <div
+            class="form-group"
+            style="
+              margin-top: 12px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <label class="checkbox-ctrl">
+              <input type="checkbox" v-model="includeEmptyDirs" />
+              包含并清理空目录
+            </label>
+          </div>
+        </div>
+
+        <div class="action-footer">
+          <button
+            class="primary btn-block scan-btn"
+            @click="scanFiles"
+            :disabled="isScanning || !targetDir"
+          >
+            {{ isScanning ? "正在深度扫描..." : "开始扫描" }}
+          </button>
+        </div>
+      </aside>
+
+      <!-- Main Content Panel -->
+      <main class="main-content">
+        <header class="main-header">
+          <h3>文件预览列表</h3>
+          <div class="stats" v-if="scanResult.length > 0">
+            <span class="badge"
+              >已选 {{ selectedIds.size }} / 共 {{ scanResult.length }}</span
             >
-              <div class="checkbox-ctrl">
+            <span class="badge highlight"
+              >可释放 {{ formatSize(selectedSize) }}</span
+            >
+          </div>
+        </header>
+
+        <div class="list-container">
+          <div
+            v-if="targetDir && !isScanning && scanResult.length === 0"
+            class="empty-state"
+          >
+            <div class="empty-icon">🍃</div>
+            <p>太棒了，目前该目录下没有符合清理条件的垃圾文件！</p>
+          </div>
+          <div v-else-if="!targetDir" class="empty-state">
+            <div class="empty-icon">👈</div>
+            <p>请先在左侧选择要扫描的目录并配置规则</p>
+          </div>
+          <div v-else-if="isScanning" class="empty-state">
+            <div class="spinner"></div>
+            <p>努力扫描中...</p>
+            <div class="progress-path" v-if="scanProgressPath">
+              {{ scanProgressPath }}
+            </div>
+          </div>
+
+          <div v-else class="file-list">
+            <div class="list-header">
+              <label class="checkbox-ctrl">
                 <input
                   type="checkbox"
-                  :checked="selectedIds.has(item.id)"
-                  @change="toggleSelection(item.id)"
-                  @click.stop
+                  :checked="
+                    selectedIds.size > 0 &&
+                    selectedIds.size === scanResult.length
+                  "
+                  @change="toggleSelectAll"
                 />
+                全选
+              </label>
+              <span class="col-name">名称</span>
+              <span
+                class="col-size"
+                @click="toggleSort"
+                style="cursor: pointer; user-select: none"
+              >
+                大小
+                <span v-if="sortOrder === 'asc'">↑</span>
+                <span v-else-if="sortOrder === 'desc'">↓</span>
+                <span v-else>↕</span>
+              </span>
+            </div>
+
+            <RecycleScroller
+              class="list-body"
+              :items="treeData"
+              :item-size="34"
+              key-field="id"
+              v-slot="{ item }"
+            >
+              <div
+                class="list-item-wrapper"
+                :style="{ paddingLeft: item.depth * 18 + 8 + 'px' }"
+              >
+                <!-- Vertical connection line -->
+                <div
+                  v-if="item.depth > 0"
+                  class="tree-line"
+                  :style="{ left: item.depth * 18 - 8 + 'px' }"
+                ></div>
+
+                <div
+                  class="list-item tree-row"
+                  :class="{
+                    selected: isAllSelected(item),
+                    'is-dir': item.isDir,
+                  }"
+                  @click="
+                    item.isDir ? toggleDir(item.id) : toggleSelection(item)
+                  "
+                  @contextmenu.prevent="showContextMenu($event, item)"
+                >
+                  <div class="checkbox-ctrl compact" @click.stop>
+                    <input
+                      type="checkbox"
+                      :checked="isAllSelected(item)"
+                      :indeterminate="isPartiallySelected(item)"
+                      @change="toggleSelection(item)"
+                    />
+                  </div>
+                  <div class="item-icon-compact">
+                    <span
+                      v-if="item.isDir && item.children.size > 0"
+                      class="expand-arrow"
+                      @click.stop="toggleDir(item.id)"
+                      :class="{ collapsed: collapsedDirs.has(item.id) }"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        style="
+                          width: 12px;
+                          height: 12px;
+                          transition: transform 0.2s;
+                        "
+                      >
+                        <path
+                          d="M7 10L12 15L17 10"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </span>
+                    <span v-else class="dir-spacer"></span>
+                    <span class="main-icon">
+                      <template v-if="item.isDir">
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                          style="width: 18px; height: 18px; color: #a0a0a0"
+                        >
+                          <path
+                            d="M3 7C3 5.89543 3.89543 5 5 5H9.58579C9.851 5 10.1054 5.10536 10.2929 5.29289L12.4142 7.41421C12.6017 7.60175 12.8561 7.70711 13.1213 7.70711H19C20.1046 7.70711 21 8.60168 21 9.70625V17C21 18.1046 20.1046 19 19 19H5C3.89543 19 3 18.1046 3 17V7Z"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            stroke-width="1.2"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </template>
+                      <template v-else>{{
+                        getFileIcon(item.name, false)
+                      }}</template>
+                    </span>
+                  </div>
+                  <div class="item-info">
+                    <div class="item-name-compact" :title="item.path">
+                      {{ item.name }}
+                    </div>
+                  </div>
+                  <div class="item-size-compact">
+                    {{
+                      item.isDir && item.size === 0 ? "" : formatSize(item.size)
+                    }}
+                  </div>
+                </div>
               </div>
-              <div class="item-icon">{{ item.is_dir ? "📁" : "📄" }}</div>
-              <div class="item-info">
-                <div class="item-name" :title="item.path">{{ item.name }}</div>
-                <div class="item-path">{{ item.path }}</div>
+            </RecycleScroller>
+          </div>
+        </div>
+
+        <footer class="main-footer" v-if="scanResult.length > 0">
+          <div
+            v-if="!isCleaning"
+            class="footer-info-wrapper"
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              width: 100%;
+            "
+          >
+            <div class="selection-info">
+              已选择 <strong>{{ selectedIds.size }}</strong> 项，总计将释放
+              <strong class="highlight-text">{{
+                formatSize(selectedSize)
+              }}</strong>
+              空间
+            </div>
+            <button
+              class="danger confirm-btn"
+              :disabled="selectedIds.size === 0"
+              @click="executeClean"
+            >
+              🗑️ 确认移入回收站
+            </button>
+          </div>
+
+          <!-- Cleaning Progress Bar -->
+          <div v-else class="cleaning-progress-wrapper" style="width: 100%">
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 8px;
+                font-size: 13px;
+              "
+            >
+              <span
+                >正在清理: {{ cleanProgress.path.split(/[/\\]/).pop() }}</span
+              >
+              <span
+                >{{ cleanProgress.current }} / {{ cleanProgress.total }}</span
+              >
+            </div>
+            <div
+              class="progress-bar-bg"
+              style="
+                height: 10px;
+                background: #eee;
+                border-radius: 5px;
+                overflow: hidden;
+              "
+            >
+              <div
+                class="progress-bar-fill"
+                :style="{
+                  width:
+                    (cleanProgress.total > 0
+                      ? (cleanProgress.current / cleanProgress.total) * 100
+                      : 0) + '%',
+                }"
+                style="
+                  height: 100%;
+                  background: var(--danger);
+                  transition: width 0.3s ease;
+                "
+              ></div>
+            </div>
+          </div>
+        </footer>
+      </main>
+    </div>
+
+    <!-- Whitelist Modal -->
+    <div
+      class="modal-overlay"
+      v-if="showWhitelistModal"
+      @click.self="showWhitelistModal = false"
+    >
+      <div class="modal-content sidebar-modal">
+        <header class="modal-header">
+          <h3>🛡️ 扫描白名单</h3>
+          <button class="close-btn" @click="showWhitelistModal = false">
+            ✕
+          </button>
+        </header>
+        <div class="modal-body">
+          <p class="modal-desc">以下目录或文件将在执行扫描时被永远跳过：</p>
+          <div v-if="whitelist.length === 0" class="empty-state mini">
+            暂无白名单记录
+          </div>
+          <ul class="whitelist-list" v-else>
+            <li v-for="path in whitelist" :key="path">
+              <div
+                style="
+                  flex: 1;
+                  display: flex;
+                  flex-direction: column;
+                  min-width: 0;
+                  margin-right: 12px;
+                  text-align: left;
+                "
+              >
+                <span class="item-name" :title="path">{{
+                  path.split(/[/\\]/).pop() || path
+                }}</span>
+                <span
+                  class="item-path"
+                  style="opacity: 0.6; font-size: 11px; margin-top: 2px"
+                  >{{ path }}</span
+                >
               </div>
-              <div class="item-size">
-                {{ item.is_dir ? "空目录" : formatSize(item.size) }}
-              </div>
+              <button
+                class="btn-text danger-text"
+                @click="removeFromWhitelist(path)"
+              >
+                移除
+              </button>
+            </li>
+          </ul>
+        </div>
+        <footer class="modal-footer" v-if="whitelist.length > 0">
+          <button class="btn-text danger-text" @click="clearWhitelist">
+            清空全部
+          </button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- About Modal -->
+    <div
+      class="modal-overlay"
+      v-if="showAboutModal"
+      @click.self="showAboutModal = false"
+    >
+      <div
+        class="modal-content"
+        style="
+          max-width: 440px;
+          border-radius: var(--radius-lg);
+          overflow: hidden;
+          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+        "
+      >
+        <header
+          class="modal-header"
+          style="
+            justify-content: center;
+            padding: 0;
+            background: var(--surface-secondary);
+            border-bottom: 1px solid var(--border);
+            position: relative;
+          "
+        >
+          <div style="display: flex; width: 100%">
+            <button
+              class="tab-btn"
+              :class="{ active: activeTab === 'about' }"
+              @click="activeTab = 'about'"
+            >
+              关于与更新
+            </button>
+            <button
+              class="tab-btn"
+              :class="{ active: activeTab === 'sponsor' }"
+              @click="activeTab = 'sponsor'"
+            >
+              赞助作者
+            </button>
+          </div>
+          <button
+            class="close-btn"
+            @click="showAboutModal = false"
+            style="
+              position: absolute;
+              right: 16px;
+              top: 12px;
+              font-size: 16px;
+              color: var(--text-muted);
+              background: transparent;
+              padding: 4px;
+            "
+          >
+            ✕
+          </button>
+        </header>
+
+        <div
+          class="modal-body"
+          v-if="activeTab === 'about'"
+          style="text-align: center; padding: 24px"
+        >
+          <img
+            src="/app-icon.svg"
+            alt="Logo"
+            style="width: 80px; height: 80px; margin-bottom: 16px"
+          />
+          <h2
+            style="margin: 0 0 8px 0; color: var(--text-main); font-size: 20px"
+          >
+            Smart Cleaner
+          </h2>
+          <p
+            style="
+              margin: 0 0 32px 0;
+              color: var(--text-muted);
+              font-size: 14px;
+            "
+          >
+            一款轻量、极简的磁盘清理工具
+          </p>
+
+          <div
+            style="
+              display: flex;
+              flex-direction: column;
+              gap: 12px;
+              align-items: center;
+              max-width: 280px;
+              margin: 0 auto;
+            "
+          >
+            <button
+              class="primary btn-block"
+              @click="checkUpdate"
+              style="
+                font-size: 14px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                border-radius: 8px;
+              "
+            >
+              🔄 检查新版本
+            </button>
+
+            <button
+              class="btn-text"
+              @click="openGithub"
+              style="
+                font-size: 14px;
+                color: var(--text-main);
+                background: var(--surface-secondary);
+                width: 100%;
+                border-radius: 8px;
+                padding: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+              "
+            >
+              <svg
+                style="width: 16px; height: 16px; fill: currentColor"
+                viewBox="0 0 16 16"
+              >
+                <path
+                  d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+                ></path>
+              </svg>
+              前往 GitHub 主页
+            </button>
+          </div>
+        </div>
+
+        <div
+          class="modal-body"
+          v-if="activeTab === 'sponsor'"
+          style="text-align: center; padding: 24px"
+        >
+          <p style="margin-top: 0; color: var(--text-main); font-size: 14px">
+            如果这个工具帮您省出了大量空间<br />欢迎随意赞赏作者一杯饮品 🍹
+          </p>
+          <div
+            style="
+              display: flex;
+              justify-content: center;
+              gap: 24px;
+              align-items: stretch;
+              margin-top: 24px;
+            "
+          >
+            <div
+              style="
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                background: #fff;
+                border-radius: 8px;
+                padding: 12px;
+                border: 1px solid var(--border);
+              "
+            >
+              <img
+                src="/wechatpay.JPG"
+                alt="WeChat Pay"
+                style="
+                  width: 100%;
+                  max-width: 140px;
+                  object-fit: contain;
+                  border-radius: 4px;
+                "
+              />
+            </div>
+            <div
+              style="
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                background: #fff;
+                border-radius: 8px;
+                padding: 12px;
+                border: 1px solid var(--border);
+              "
+            >
+              <img
+                src="/alipay.PNG"
+                alt="Alipay"
+                style="
+                  width: 100%;
+                  max-width: 140px;
+                  object-fit: contain;
+                  border-radius: 4px;
+                "
+              />
             </div>
           </div>
         </div>
       </div>
+    </div>
 
-      <footer class="main-footer" v-if="scanResult.length > 0">
-        <div class="selection-info">
-          已选择 <strong>{{ selectedIds.size }}</strong> 项，总计将释放
-          <strong class="highlight-text">{{ formatSize(selectedSize) }}</strong>
-          空间
-        </div>
+    <!-- App Footer -->
+    <footer class="app-footer">
+      <div style="font-weight: 500; opacity: 0.8">Smart Cleaner</div>
+      <div style="display: flex; gap: 16px">
         <button
-          class="danger confirm-btn"
-          :disabled="selectedIds.size === 0"
-          @click="executeClean"
+          class="btn-text"
+          @click="showWhitelistModal = true"
+          style="
+            color: var(--text-muted);
+            background: transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px;
+          "
         >
-          🗑️ 确认移入回收站
+          🛡️ 白名单 ({{ whitelist.length }})
         </button>
-      </footer>
-    </main>
+        <button
+          class="btn-text"
+          @click="showAboutModal = true"
+          style="
+            color: var(--text-muted);
+            background: transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px;
+          "
+        >
+          ℹ️ 关于中心
+        </button>
+      </div>
+    </footer>
+
+    <!-- Custom Context Menu -->
+    <div
+      v-if="contextMenu.show"
+      class="context-menu"
+      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+      @click.stop
+    >
+      <div class="menu-item highlight" @click="handleContextMenuAddWhitelist">
+        <span style="margin-right: 6px">🚫</span> 加入白名单并忽略
+      </div>
+    </div>
+
+    <!-- Custom Confirm Modal -->
+    <div
+      class="modal-overlay"
+      v-if="confirmModal.show"
+      @click.self="confirmModal.show = false"
+      style="z-index: 2000"
+    >
+      <div class="modal-content" style="max-width: 380px; padding: 24px">
+        <h3 style="margin: 0 0 12px 0; font-size: 18px">
+          {{ confirmModal.title }}
+        </h3>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6">
+          {{ confirmModal.message }}
+        </p>
+        <div style="display: flex; justify-content: flex-end; gap: 12px">
+          <button class="btn-text" @click="confirmModal.show = false">
+            取消
+          </button>
+          <button class="danger" @click="confirmModal.onConfirm">确定</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.layout {
+.app-wrapper {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
+}
+
+.layout {
+  display: flex;
+  flex: 1;
+  width: 100%;
   background: var(--surface-secondary);
+  overflow: hidden;
+}
+
+.app-footer {
+  height: 48px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  font-size: 13px;
+  color: var(--text-muted);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.02);
+  z-index: 20;
 }
 
 .sidebar {
@@ -363,6 +1313,7 @@ const executeClean = async () => {
 .icon-clean {
   font-size: 28px;
   background: linear-gradient(135deg, var(--primary), #a8b1e4);
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -498,6 +1449,17 @@ const executeClean = async () => {
   opacity: 0.8;
 }
 
+.progress-path {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 400px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.7;
+}
+
 .file-list {
   display: flex;
   flex-direction: column;
@@ -529,59 +1491,111 @@ const executeClean = async () => {
   flex: 1;
   overflow-y: auto;
   padding: 8px 12px;
+  /* virtual scroller internally needs block context */
+  display: block;
 }
-.list-item {
+.list-item-wrapper {
+  position: relative;
+  padding-bottom: 2px;
+}
+.tree-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.5;
+  z-index: 1;
+}
+.list-item.tree-row {
   display: flex;
   align-items: center;
-  padding: 12px;
-  border-radius: var(--radius-md);
-  margin-bottom: 4px;
+  height: 32px;
+  padding: 0 4px;
+  font-size: 13px;
+  border-radius: 4px;
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid transparent;
-  transition: var(--transition);
+  transition: background 0.1s ease;
+  width: 100%;
 }
-.list-item:hover {
+.list-item.tree-row:hover {
   background: var(--surface-secondary);
 }
-.list-item.selected {
-  background: rgba(92, 106, 196, 0.05);
-  border-color: rgba(92, 106, 196, 0.2);
+.checkbox-ctrl.compact {
+  width: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 2px;
 }
-.list-item .checkbox-ctrl {
-  width: 40px;
+.item-icon-compact {
+  display: flex;
+  align-items: center;
+  margin-right: 6px;
+  width: 40px; /* fixed width for alignment */
+  justify-content: flex-start;
 }
-.item-icon {
-  font-size: 20px;
-  width: 36px;
-  text-align: center;
+.expand-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.expand-arrow:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text-main);
+}
+.expand-arrow svg {
+  transform: rotate(0deg);
+}
+.expand-arrow.collapsed svg {
+  transform: rotate(-90deg);
+}
+.dir-spacer {
+  width: 16px;
+}
+.main-icon {
+  font-size: 16px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+  opacity: 0.85; /* slight transparency for file emojis */
 }
 .item-info {
   flex: 1;
   min-width: 0;
 }
-.item-name {
-  font-size: 14px;
-  font-weight: 500;
+.item-name-compact {
+  font-size: 12.5px;
+  font-weight: 400;
   color: var(--text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: -0.01em;
 }
-.item-path {
+.item-size-compact {
+  width: 75px;
+  text-align: right;
   font-size: 11px;
   color: var(--text-muted);
-  margin-top: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  opacity: 0.6;
 }
-.item-size {
-  width: 100px;
-  text-align: right;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
+.list-item.tree-row.is-dir {
+  font-weight: 500;
+}
+.list-item.selected {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+.list-item.selected .item-name-compact {
+  font-weight: 600;
 }
 
 .summary-bar {
@@ -625,5 +1639,156 @@ const executeClean = async () => {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Item Actions */
+.item-actions {
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.2s;
+  padding-right: 8px;
+}
+.list-item:hover .item-actions {
+  opacity: 1;
+}
+
+/* Modals */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.modal-content {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  width: 90%;
+  max-width: 500px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.modal-header {
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.modal-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+.whitelist-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  max-height: 300px;
+  overflow-y: auto;
+}
+.whitelist-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.whitelist-list li:last-child {
+  border-bottom: none;
+}
+.path-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: 12px;
+  color: var(--text-main);
+  direction: rtl;
+  text-align: left;
+}
+.danger-text {
+  color: #e53935 !important;
+}
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  text-align: right;
+  background: var(--surface-secondary);
+}
+
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 14px 0;
+  font-size: 14px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.tab-btn:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+.tab-btn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: transparent;
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  z-index: 1000;
+  min-width: 180px;
+}
+.context-menu .menu-item {
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: var(--transition);
+}
+.context-menu .menu-item:hover {
+  background: var(--surface-secondary);
+}
+.context-menu .menu-item.highlight {
+  color: var(--text-main);
+  font-weight: 500;
 }
 </style>

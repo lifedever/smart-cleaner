@@ -1,0 +1,13 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none"
+    xmlns="http://www.w3.org/2000/svg">
+    <!-- macOS Squircle Background -->
+    <rect x="128" y="128" width="768" height="768" rx="170" fill="black"/>
+
+    <!-- Stylized Magic Wand / Sparkle -->
+    <path d="M512 320L545 479L704 512L545 545L512 704L479 545L320 512L479 479L512 320Z" fill="white"/>
+    <circle cx="680" cy="380" r="40" fill="white" opacity="0.8"/>
+    <circle cx="380" cy="680" r="30" fill="white" opacity="0.6"/>
+
+    <!-- Glassmorphism Reflection -->
+    <path d="M128 298C128 204.116 204.116 128 298 128H726C819.884 128 896 204.116 896 298V320C896 320 700 380 512 380C324 380 128 320 128 320V298Z" fill="white" opacity="0.1"/>
+</svg>
