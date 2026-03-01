@@ -215,18 +215,8 @@ onMounted(async () => {
     { deep: true },
   );
 
-  // Auto check update once a day
-  if (store) {
-    const lastCheck = (await store.get("last_update_check")) as number;
-    const now = Date.now();
-    const oneDay = 24 * 60 * 60 * 1000;
-
-    if (!lastCheck || now - lastCheck > oneDay) {
-      await checkUpdate(true);
-      await store.set("last_update_check", now);
-      await store.save();
-    }
-  }
+  // Auto check update on every launch
+  checkUpdate(true);
 
   window.addEventListener("click", () => {
     if (contextMenu.value.show) {
