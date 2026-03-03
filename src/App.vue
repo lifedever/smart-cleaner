@@ -1705,13 +1705,28 @@ const executeClean = async () => {
           </p>
           <p
             style="
-              margin: 0 0 32px 0;
+              margin: 0 0 16px 0;
               color: var(--text-muted);
               font-size: 14px;
             "
           >
             一款轻量、极简的磁盘清理工具
           </p>
+
+          <div
+            v-if="hasUpdate && updateInfo"
+            style="
+              margin: 0 0 24px 0;
+              padding: 12px 16px;
+              background: rgba(52, 199, 89, 0.08);
+              border: 1px solid rgba(52, 199, 89, 0.3);
+              border-radius: 8px;
+              color: var(--text-main);
+              font-size: 13px;
+            "
+          >
+            🎉 发现新版本 <strong>{{ updateInfo.version }}</strong>，点击下方按钮立即更新
+          </div>
 
           <div
             style="
@@ -1737,7 +1752,13 @@ const executeClean = async () => {
               "
             >
               <span v-if="updateLoading" class="spinner"></span>
-              {{ updateLoading ? updateLoadingText : "🔄 检查新版本" }}
+              {{
+                updateLoading
+                  ? updateLoadingText
+                  : hasUpdate
+                    ? "🚀 立即更新"
+                    : "🔄 检查新版本"
+              }}
             </button>
 
             <button

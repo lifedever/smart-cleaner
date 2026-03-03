@@ -249,13 +249,12 @@ async fn move_to_trash(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
-    target_dir: String,
+    _target_dir: String,
 ) -> Result<(), String> {
     state.cancel_clean.store(false, Ordering::Relaxed);
     let mut errors = Vec::new();
     let total = paths.len() as u64;
     let mut current = 0;
-    let target_path = PathBuf::from(&target_dir);
 
     let mut context = trash::TrashContext::default();
     #[cfg(target_os = "macos")]
@@ -288,9 +287,6 @@ async fn move_to_trash(
                 let err_msg = format!("Failed to delete {}: {}", path_str, e);
                 eprintln!("{}", err_msg);
                 errors.push(err_msg);
-            } else {
-                // If it's a file, we might want to clean up its parent folder if it became empty
-                remove_parent_if_empty(&path, &target_path);
             }
         }
     }
@@ -298,33 +294,6 @@ async fn move_to_trash(
         return Err(format!("部分文件未能删除:\n{}", errors.join("\n")));
     }
     Ok(())
-}
-
-fn remove_parent_if_empty(path: &PathBuf, target_dir: &PathBuf) {
-    if let Some(parent) = path.parent() {
-        let parent_ptr = parent.to_path_buf();
-        // Only clean up parents INSIDE the target directory
-        if parent_ptr == *target_dir || !parent_ptr.starts_with(target_dir) {
-            return;
-        }
-
-        let is_empty = fs::read_dir(&parent_ptr)
-            .map(|entries| {
-                entries.filter_map(|e| e.ok()).all(|e| {
-                    let name = e.file_name();
-                    let name_str = name.to_string_lossy().to_lowercase();
-                    name_str == ".ds_store" || name_str == "thumbs.db"
-                })
-            })
-            .unwrap_or(false);
-
-        if is_empty {
-            if let Ok(_) = fs::remove_dir_all(&parent_ptr) {
-                // Recurse to see if the grand-parent is now also empty
-                remove_parent_if_empty(&parent_ptr, target_dir);
-            }
-        }
-    }
 }
 
 #[tauri::command]
