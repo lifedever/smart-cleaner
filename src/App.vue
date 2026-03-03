@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, message, ask } from "@tauri-apps/plugin-dialog";
+import { open, message } from "@tauri-apps/plugin-dialog";
 import { load } from "@tauri-apps/plugin-store";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -46,6 +46,25 @@ const hasUpdate = ref(false);
 const updateInfo = ref<any>(null);
 const updateLoading = ref(false);
 const updateLoadingText = ref("");
+const showUpdateToast = ref(false);
+
+const doUpdate = async () => {
+  if (!updateInfo.value) return;
+  showUpdateToast.value = false;
+  updateLoading.value = true;
+  updateLoadingText.value = "正在下载并安装更新...";
+  try {
+    await updateInfo.value.downloadAndInstall();
+    updateLoadingText.value = "更新安装完毕，即将重启...";
+    await new Promise((r) => setTimeout(r, 800));
+    await relaunch();
+  } catch (e: any) {
+    updateLoading.value = false;
+    const errorMsg =
+      e?.message || (typeof e === "string" ? e : JSON.stringify(e));
+    await message(`更新失败: ${errorMsg}`, { title: "错误", kind: "error" });
+  }
+};
 
 const checkUpdate = async (silent = false) => {
   try {
@@ -60,19 +79,10 @@ const checkUpdate = async (silent = false) => {
     if (update) {
       hasUpdate.value = true;
       updateInfo.value = update;
-      if (!silent) {
-        const yes = await ask(
-          `发现新版本 ${update.version}，是否更新？\n${update.body || ""}`,
-          { title: "发现新版本", kind: "info" },
-        );
-        if (yes) {
-          updateLoading.value = true;
-          updateLoadingText.value = "正在下载并安装更新...";
-          await update.downloadAndInstall();
-          updateLoadingText.value = "更新安装完毕，即将重启...";
-          await new Promise((r) => setTimeout(r, 800));
-          await relaunch();
-        }
+      if (silent) {
+        showUpdateToast.value = true;
+      } else {
+        await doUpdate();
       }
     } else {
       hasUpdate.value = false;
@@ -1740,7 +1750,7 @@ const executeClean = async () => {
           >
             <button
               class="primary btn-block"
-              @click="() => checkUpdate(false)"
+              @click="hasUpdate ? doUpdate() : checkUpdate(false)"
               :disabled="updateLoading"
               style="
                 font-size: 14px;
@@ -1942,6 +1952,19 @@ const executeClean = async () => {
         </div>
       </div>
     </div>
+
+    <!-- Update Toast -->
+    <Transition name="toast-slide">
+      <div v-if="showUpdateToast" class="update-toast">
+        <div class="update-toast-content">
+          <span>🎉 发现新版本 <strong>{{ updateInfo?.version }}</strong></span>
+          <div class="update-toast-actions">
+            <button class="update-toast-btn primary" @click="doUpdate">立即更新</button>
+            <button class="update-toast-btn" @click="showUpdateToast = false">忽略</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- Global Update Loading Overlay -->
     <div
@@ -2587,5 +2610,58 @@ const executeClean = async () => {
 .context-menu .menu-item.highlight {
   color: var(--text-main);
   font-weight: 500;
+}
+
+.update-toast {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 3000;
+  background: var(--surface);
+  border: 1px solid rgba(52, 199, 89, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 14px 18px;
+  max-width: 320px;
+}
+.update-toast-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text-main);
+}
+.update-toast-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.update-toast-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface-secondary);
+  color: var(--text-main);
+}
+.update-toast-btn.primary {
+  background: #34c759;
+  color: white;
+  border-color: #34c759;
+}
+.toast-slide-enter-active {
+  transition: all 0.3s ease-out;
+}
+.toast-slide-leave-active {
+  transition: all 0.2s ease-in;
+}
+.toast-slide-enter-from {
+  transform: translateX(100%);
+  opacity: 0;
+}
+.toast-slide-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
 }
 </style>
