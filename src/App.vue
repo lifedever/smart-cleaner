@@ -49,10 +49,14 @@ const updateLoadingText = ref("");
 
 const checkUpdate = async (silent = false) => {
   try {
-    updateLoading.value = true;
-    updateLoadingText.value = "正在检查更新...";
+    if (!silent) {
+      updateLoading.value = true;
+      updateLoadingText.value = "正在检查更新...";
+    }
     const update = await check();
-    updateLoading.value = false;
+    if (!silent) {
+      updateLoading.value = false;
+    }
     if (update) {
       hasUpdate.value = true;
       updateInfo.value = update;
