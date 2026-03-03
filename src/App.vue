@@ -2,7 +2,8 @@
 import { ref, computed, nextTick, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, message } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open, save, message } from "@tauri-apps/plugin-dialog";
 import { load } from "@tauri-apps/plugin-store";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -47,6 +48,17 @@ const updateInfo = ref<any>(null);
 const updateLoading = ref(false);
 const updateLoadingText = ref("");
 const showUpdateToast = ref(false);
+
+// General toast
+const toast = ref<{ show: boolean; message: string; type: 'success' | 'warning' | 'info' }>({
+  show: false, message: '', type: 'success',
+});
+let _toastTimer: ReturnType<typeof setTimeout> | null = null;
+const showToast = (msg: string, type: 'success' | 'warning' | 'info' = 'success', duration = 3000) => {
+  if (_toastTimer) clearTimeout(_toastTimer);
+  toast.value = { show: true, message: msg, type };
+  _toastTimer = setTimeout(() => { toast.value.show = false; }, duration);
+};
 
 const doUpdate = async () => {
   if (!updateInfo.value) return;
@@ -119,9 +131,12 @@ const getAllDirectoryIds = (node: any): string[] => {
 };
 
 const collapseAll = () => {
-  const tree = buildTree(scanResult.value);
-  const allDirIds = getAllDirectoryIds(tree);
-  collapsedDirs.value = new Set(allDirIds);
+  if (treeRoot.value?._allDirIds) {
+    collapsedDirs.value = new Set(treeRoot.value._allDirIds);
+  } else {
+    const allDirIds = getAllDirectoryIds(treeRoot.value);
+    collapsedDirs.value = new Set(allDirIds);
+  }
 };
 
 const openGithub = async () => {
@@ -131,6 +146,7 @@ const openGithub = async () => {
 // Form State
 const targetDir = ref("");
 const minSizeMB = ref<number | "">("");
+const maxSizeMB = ref<number | "">("");
 const createdBeforeDays = ref<number | "">("");
 const modifiedBeforeDays = ref<number | "">("");
 const extensions = ref("");
@@ -161,6 +177,33 @@ watch(extensions, (val) => {
 
 const includeHidden = ref(false);
 
+// Filter Rules
+interface FilterRule {
+  id: string;
+  name: string;
+  createdAt: number;
+  filters: {
+    minSizeMB: number | "";
+    maxSizeMB: number | "";
+    createdBeforeDays: number | "";
+    modifiedBeforeDays: number | "";
+    extensions: string;
+    includeHidden: boolean;
+  };
+}
+const filterRules = ref<FilterRule[]>([]);
+const selectedRuleId = ref<string>("");
+const showFilterRulesModal = ref(false);
+const saveAsRule = ref(false);
+let isLoadingRule = false;
+
+const isDragOver = ref(false);
+const diskUsage = ref<{
+  total_bytes: number;
+  available_bytes: number;
+  used_bytes: number;
+} | null>(null);
+
 const collapsedDirs = ref<Set<string>>(new Set());
 const treeRoot = ref<any>(null);
 const directoryTotalCount = new Map<string, number>();
@@ -183,6 +226,8 @@ async function initStore() {
         targetDir.value = savedState.targetDir;
       if (savedState.minSizeMB !== undefined)
         minSizeMB.value = savedState.minSizeMB;
+      if (savedState.maxSizeMB !== undefined)
+        maxSizeMB.value = savedState.maxSizeMB;
       if (savedState.createdBeforeDays !== undefined)
         createdBeforeDays.value = savedState.createdBeforeDays;
       if (savedState.modifiedBeforeDays !== undefined)
@@ -192,9 +237,131 @@ async function initStore() {
       if (savedState.includeHidden !== undefined)
         includeHidden.value = savedState.includeHidden;
     }
+
+    const savedRules = await store.get("filter_rules");
+    if (savedRules && Array.isArray(savedRules)) {
+      filterRules.value = savedRules as FilterRule[];
+    }
   } catch (e) {
     console.error("Failed to load store:", e);
   }
+}
+
+function ruleSummary(rule: FilterRule): string {
+  const parts: string[] = [];
+  if (rule.filters.minSizeMB !== "") parts.push(`>${rule.filters.minSizeMB}MB`);
+  if (rule.filters.maxSizeMB !== "") parts.push(`<${rule.filters.maxSizeMB}MB`);
+  if (rule.filters.createdBeforeDays !== "") parts.push(`创建>${rule.filters.createdBeforeDays}天`);
+  if (rule.filters.modifiedBeforeDays !== "") parts.push(`修改>${rule.filters.modifiedBeforeDays}天`);
+  if (rule.filters.extensions) {
+    const ext = rule.filters.extensions;
+    parts.push(ext.length > 20 ? ext.substring(0, 20) + "..." : ext);
+  }
+  if (rule.filters.includeHidden) parts.push("含隐藏");
+  return parts.length > 0 ? parts.join(", ") : "无筛选条件";
+}
+
+async function persistFilterRules() {
+  if (store) {
+    await store.set("filter_rules", JSON.parse(JSON.stringify(filterRules.value)));
+    await store.save();
+  }
+}
+
+function isRuleDuplicate(): boolean {
+  return filterRules.value.some((r) =>
+    r.filters.minSizeMB === minSizeMB.value &&
+    r.filters.maxSizeMB === maxSizeMB.value &&
+    r.filters.createdBeforeDays === createdBeforeDays.value &&
+    r.filters.modifiedBeforeDays === modifiedBeforeDays.value &&
+    r.filters.extensions === extensions.value &&
+    r.filters.includeHidden === includeHidden.value
+  );
+}
+
+async function trySaveFilterRule() {
+  if (!saveAsRule.value) return;
+  if (isRuleDuplicate()) {
+    showToast("已存在相同筛选条件的规则", "warning");
+    saveAsRule.value = false;
+    return;
+  }
+  const filters = {
+    minSizeMB: minSizeMB.value,
+    maxSizeMB: maxSizeMB.value,
+    createdBeforeDays: createdBeforeDays.value,
+    modifiedBeforeDays: modifiedBeforeDays.value,
+    extensions: extensions.value,
+    includeHidden: includeHidden.value,
+  };
+  const rule: FilterRule = {
+    id: Date.now().toString(36),
+    name: ruleSummary({ filters } as FilterRule),
+    createdAt: Date.now(),
+    filters,
+  };
+  filterRules.value.push(rule);
+  selectedRuleId.value = rule.id;
+  await persistFilterRules();
+  saveAsRule.value = false;
+  showToast(`规则已保存`, "success");
+}
+
+function loadFilterRule(ruleId: string) {
+  const rule = filterRules.value.find((r) => r.id === ruleId);
+  if (!rule) return;
+  isLoadingRule = true;
+  minSizeMB.value = rule.filters.minSizeMB;
+  maxSizeMB.value = rule.filters.maxSizeMB;
+  createdBeforeDays.value = rule.filters.createdBeforeDays;
+  modifiedBeforeDays.value = rule.filters.modifiedBeforeDays;
+  extensions.value = rule.filters.extensions;
+  includeHidden.value = rule.filters.includeHidden;
+  selectedRuleId.value = ruleId;
+  nextTick(() => { isLoadingRule = false; });
+}
+
+async function deleteFilterRule(ruleId: string) {
+  const rule = filterRules.value.find((r) => r.id === ruleId);
+  if (!rule) return;
+  const ok = await showConfirm("删除确认", `确定要删除规则「${rule.name}」吗？`);
+  if (!ok) return;
+  filterRules.value = filterRules.value.filter((r) => r.id !== ruleId);
+  if (selectedRuleId.value === ruleId) selectedRuleId.value = "";
+  await persistFilterRules();
+  showToast(`规则「${rule.name}」已删除`, "success");
+}
+
+const editingRuleId = ref<string>("");
+const editingRuleName = ref("");
+
+function startEditRuleName(rule: FilterRule) {
+  editingRuleId.value = rule.id;
+  editingRuleName.value = rule.name;
+  nextTick(() => {
+    const el = document.querySelector('.rule-name-edit') as HTMLInputElement;
+    el?.focus();
+    el?.select();
+  });
+}
+
+async function finishEditRuleName() {
+  const name = editingRuleName.value.trim();
+  const rule = filterRules.value.find((r) => r.id === editingRuleId.value);
+  if (rule && name) {
+    rule.name = name;
+    await persistFilterRules();
+  }
+  editingRuleId.value = "";
+}
+
+async function clearAllFilterRules() {
+  const ok = await showConfirm("清空确认", "确定要清空所有筛选规则吗？");
+  if (!ok) return;
+  filterRules.value = [];
+  selectedRuleId.value = "";
+  await persistFilterRules();
+  showToast("所有筛选规则已清空", "success");
 }
 
 onMounted(async () => {
@@ -209,6 +376,7 @@ onMounted(async () => {
     [
       targetDir,
       minSizeMB,
+      maxSizeMB,
       createdBeforeDays,
       modifiedBeforeDays,
       extensions,
@@ -219,6 +387,7 @@ onMounted(async () => {
         await store.set("form_state", {
           targetDir: targetDir.value,
           minSizeMB: minSizeMB.value,
+          maxSizeMB: maxSizeMB.value,
           createdBeforeDays: createdBeforeDays.value,
           modifiedBeforeDays: modifiedBeforeDays.value,
           extensions: extensions.value,
@@ -232,18 +401,110 @@ onMounted(async () => {
 
   // Clear scan results when filter options change
   watch(
-    [minSizeMB, createdBeforeDays, modifiedBeforeDays, extensions, includeHidden],
+    [minSizeMB, maxSizeMB, createdBeforeDays, modifiedBeforeDays, extensions, includeHidden],
     () => {
       scanResult.value = [];
       totalSize.value = 0;
       selectedIds.value = new Set();
       directorySelectedCount.value = new Map();
       treeRoot.value = null;
+      hasScanned.value = false;
+      if (!isLoadingRule) {
+        selectedRuleId.value = "";
+      }
     },
   );
 
+  // Fetch disk usage when target directory changes
+  watch(targetDir, async (dir) => {
+    if (dir) {
+      try {
+        diskUsage.value = await invoke("get_disk_usage", { path: dir });
+      } catch {
+        diskUsage.value = null;
+      }
+    } else {
+      diskUsage.value = null;
+    }
+  }, { immediate: true });
+
   // Auto check update on every launch
   checkUpdate(true);
+
+  // Drag & Drop directory support
+  const webview = getCurrentWebview();
+  await webview.onDragDropEvent(async (event) => {
+    if (event.payload.type === "enter") {
+      isDragOver.value = true;
+    } else if (event.payload.type === "leave" || event.payload.type === "over") {
+      if (event.payload.type === "leave") isDragOver.value = false;
+    } else if (event.payload.type === "drop") {
+      isDragOver.value = false;
+      const paths = event.payload.paths;
+      if (paths && paths.length > 0) {
+        const droppedPath = paths[0];
+        const isDir = await invoke<boolean>("is_directory", { path: droppedPath });
+        if (isDir) {
+          targetDir.value = droppedPath;
+        } else {
+          await message("请拖入一个文件夹，而非文件", { title: "提示", kind: "warning" });
+        }
+      }
+    }
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener("keydown", async (e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement)?.tagName;
+    const isMeta = e.metaKey || e.ctrlKey;
+
+    // Allow Cmd+R anywhere, skip other shortcuts in inputs
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      if (!isMeta || e.key !== "r") return;
+    }
+
+    // Cmd/Ctrl+A: Select all
+    if (isMeta && e.key === "a" && scanResult.value.length > 0) {
+      e.preventDefault();
+      const allIds = new Set<string>();
+      scanResult.value.forEach((f: any) => allIds.add(f.id));
+      selectedIds.value = allIds;
+      const selCountMap = new Map<string, number>();
+      directoryTotalCount.forEach((count, dirId) => {
+        selCountMap.set(dirId, count);
+      });
+      directorySelectedCount.value = selCountMap;
+    }
+
+    // Cmd/Ctrl+D: Deselect all
+    if (isMeta && e.key === "d" && scanResult.value.length > 0) {
+      e.preventDefault();
+      selectedIds.value = new Set();
+      const selCountMap = new Map<string, number>();
+      directoryTotalCount.forEach((_, dirId) => {
+        selCountMap.set(dirId, 0);
+      });
+      directorySelectedCount.value = selCountMap;
+    }
+
+    // Delete/Backspace: Trigger clean
+    if (
+      (e.key === "Delete" || e.key === "Backspace") &&
+      !isMeta &&
+      selectedIds.value.size > 0 &&
+      !isCleaning.value &&
+      !isScanning.value
+    ) {
+      e.preventDefault();
+      await executeClean();
+    }
+
+    // Cmd/Ctrl+R: Re-scan
+    if (isMeta && e.key === "r" && targetDir.value && !isScanning.value) {
+      e.preventDefault();
+      await scanFiles(true);
+    }
+  });
 
   window.addEventListener("click", () => {
     if (contextMenu.value.show) {
@@ -308,7 +569,7 @@ const addToWhitelist = async (fileItem: any) => {
   const nextSet = new Set(selectedIds.value);
   removedIds.forEach((id) => nextSet.delete(id));
   selectedIds.value = nextSet;
-  treeRoot.value = buildTree(scanResult.value);
+  treeRoot.value = await buildTree(scanResult.value);
 
   const newSelCountMap = new Map<string, number>();
   const countSelectedRecursive = (node: any): number => {
@@ -332,15 +593,9 @@ const addToWhitelist = async (fileItem: any) => {
     await store.set("whitelist", Array.from(whitelist.value));
     await store.save();
 
-    await message(
-      `「${fileItem.name}」已加入白名单，该记录已从本次扫描列表中移除。`,
-      { title: "操作成功", kind: "info" },
-    );
+    showToast(`「${fileItem.name}」已加入白名单，该记录已从本次扫描列表中移除`, 'success');
   } else {
-    await message(`「${fileItem.name}」已在白名单中，该记录已从列表中移除。`, {
-      title: "提示",
-      kind: "info",
-    });
+    showToast(`「${fileItem.name}」已在白名单中，该记录已从列表中移除`, 'info');
   }
 };
 
@@ -373,7 +628,54 @@ const clearWhitelist = async () => {
   }
 };
 
-const buildTree = (files: any[]) => {
+const exportWhitelist = async () => {
+  if (whitelist.value.length === 0) {
+    await message("白名单为空，无法导出", { title: "提示", kind: "warning" });
+    return;
+  }
+  const filePath = await save({
+    title: "导出白名单",
+    defaultPath: "whitelist.json",
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (filePath) {
+    try {
+      await invoke("export_whitelist", { path: filePath, whitelist: whitelist.value });
+      await message("白名单已成功导出", { title: "操作成功", kind: "info" });
+    } catch (e: any) {
+      await message(`导出失败: ${e}`, { title: "错误", kind: "error" });
+    }
+  }
+};
+
+const importWhitelist = async () => {
+  const filePath = await open({
+    title: "导入白名单",
+    filters: [{ name: "JSON", extensions: ["json"] }],
+    multiple: false,
+    directory: false,
+  });
+  if (filePath) {
+    try {
+      const imported: string[] = await invoke("import_whitelist", { path: filePath });
+      const merged = new Set([...whitelist.value, ...imported]);
+      whitelist.value = Array.from(merged);
+      await store.set("whitelist", whitelist.value);
+      await store.save();
+      await message(
+        `成功导入 ${imported.length} 条记录（去重后共 ${whitelist.value.length} 条）`,
+        { title: "操作成功", kind: "info" },
+      );
+    } catch (e: any) {
+      await message(`导入失败: ${e}`, { title: "错误", kind: "error" });
+    }
+  }
+};
+
+const TREE_CHUNK_SIZE = 5000;
+const yieldToMain = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const buildTree = async (files: any[]) => {
   const root: any = {
     id: "root",
     name: "Root",
@@ -381,39 +683,46 @@ const buildTree = (files: any[]) => {
     children: new Map(),
     isDir: true,
     size: 0,
-    fileIds: [], // Direct files
+    fileIds: [],
   };
 
   directoryTotalCount.clear();
 
-  files.forEach((file) => {
-    const relativePath = file.path
-      .replace(targetDir.value, "")
-      .replace(/^[/\\]/, "");
-    const parts = relativePath.split(/[/\\]/).filter((p: string) => p);
+  const basePath = targetDir.value;
+  const baseLen = basePath.length;
+
+  // Process files in chunks to keep UI responsive
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    // Fast path stripping: skip basePath prefix + leading slash
+    let start = baseLen;
+    if (file.path.charCodeAt(start) === 47 || file.path.charCodeAt(start) === 92) start++;
+    const relativePath = file.path.substring(start);
+    const parts = relativePath.split(/[/\\]/);
 
     let current = root;
-    parts.forEach((part: string, index: number) => {
-      const isLast = index === parts.length - 1;
-      const fullPath =
-        targetDir.value + "/" + parts.slice(0, index + 1).join("/");
+    let currentPath = basePath;
+    for (let j = 0; j < parts.length; j++) {
+      const part = parts[j];
+      if (!part) continue;
+      currentPath += "/" + part;
+      const isLast = j === parts.length - 1;
 
       if (!current.children.has(part)) {
         if (isLast) {
-          const node = {
+          current.children.set(part, {
             ...file,
             isDir: file.is_dir,
             children: new Map(),
-          };
-          current.children.set(part, node);
+          });
           if (!file.is_dir) {
             current.fileIds.push(file.id);
           }
         } else {
           current.children.set(part, {
-            id: `dir-${fullPath}`,
+            id: `dir-${currentPath}`,
             name: part,
-            path: fullPath,
+            path: currentPath,
             isDir: true,
             size: 0,
             children: new Map(),
@@ -422,10 +731,18 @@ const buildTree = (files: any[]) => {
         }
       }
       current = current.children.get(part);
-    });
-  });
+    }
+
+    // Yield every CHUNK_SIZE files
+    if (i > 0 && i % TREE_CHUNK_SIZE === 0) {
+      scanProgressPath.value = `正在构建目录树... ${i.toLocaleString()} / ${files.length.toLocaleString()}`;
+      await yieldToMain();
+    }
+  }
 
   // Calculate sizes, time ranges, and recursive counts
+  const allDirIds: string[] = [];
+
   const finalizeStats = (node: any) => {
     let sizeTotal = 0;
     let countTotal = 0;
@@ -433,8 +750,11 @@ const buildTree = (files: any[]) => {
     let modifiedMax = 0;
 
     if (!isTreeDir(node)) {
-      // Leaf node: file or empty directory from scan results
       return { size: node.size, count: 1 };
+    }
+
+    if (node.id !== "root") {
+      allDirIds.push(node.id);
     }
 
     node.children.forEach((child: any) => {
@@ -455,33 +775,40 @@ const buildTree = (files: any[]) => {
   };
 
   finalizeStats(root);
+  (root as any)._allDirIds = allDirIds;
+
   return root;
 };
 
 const flattenTree = (node: any, depth = -1): any[] => {
   const list: any[] = [];
-  if (depth >= 0) {
-    list.push({ ...node, depth });
-  }
+  const stack: Array<{ node: any; depth: number }> = [{ node, depth }];
 
-  if (node.isDir && (depth === -1 || !collapsedDirs.value.has(node.id))) {
-    // Sort siblings based on global sortOrder
-    const children = Array.from(node.children.values()).sort(
-      (a: any, b: any) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        const modifier = sortOrder.value === "asc" ? 1 : -1;
-        if (sortField.value === "size") {
-          return (a.size - b.size) * modifier;
-        }
-        const field =
-          sortField.value === "created" ? "created_at" : "modified_at";
-        return ((a[field] || 0) - (b[field] || 0)) * modifier;
-      },
-    );
+  while (stack.length > 0) {
+    const { node: cur, depth: d } = stack.pop()!;
 
-    children.forEach((child: any) => {
-      list.push(...flattenTree(child, depth + 1));
-    });
+    if (d >= 0) {
+      list.push({ ...cur, depth: d });
+    }
+
+    if (cur.isDir && (d === -1 || !collapsedDirs.value.has(cur.id))) {
+      const children = Array.from(cur.children.values()).sort(
+        (a: any, b: any) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          const modifier = sortOrder.value === "asc" ? 1 : -1;
+          if (sortField.value === "size") {
+            return (a.size - b.size) * modifier;
+          }
+          const field =
+            sortField.value === "created" ? "created_at" : "modified_at";
+          return ((a[field] || 0) - (b[field] || 0)) * modifier;
+        },
+      );
+      // Push in reverse order so first child is processed first
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push({ node: children[i], depth: d + 1 });
+      }
+    }
   }
   return list;
 };
@@ -499,11 +826,18 @@ const toggleDir = (id: string, e?: Event) => {
 
 // Results State
 const isScanning = ref(false);
+const isRendering = ref(false);
+const hasScanned = ref(false);
 const scanProgressPath = ref("");
 const _unlistenProgress = ref<any>(null);
 
 const scanResult = ref<any[]>([]);
 const totalSize = ref(0);
+const permissionErrors = ref<string[]>([]);
+const scanTruncated = ref(false);
+const scanDuration = ref(0);
+const scanElapsed = ref(0);
+let _scanTimer: ReturnType<typeof setInterval> | null = null;
 const selectedIds = ref<Set<string>>(new Set());
 
 const selectDirectory = async () => {
@@ -530,6 +864,8 @@ const scanFiles = async (resetSelection = true) => {
     return;
   }
 
+  await trySaveFilterRule();
+
   scanProgressPath.value = "正在初始化扫描...";
 
   // Setup listener for progress
@@ -543,6 +879,13 @@ const scanFiles = async (resetSelection = true) => {
   scanResult.value = [];
   selectedIds.value.clear();
   totalSize.value = 0;
+  scanDuration.value = 0;
+  scanElapsed.value = 0;
+
+  const scanStartTime = performance.now();
+  _scanTimer = setInterval(() => {
+    scanElapsed.value = Math.round((performance.now() - scanStartTime) / 100) / 10;
+  }, 100);
 
   await nextTick();
 
@@ -565,6 +908,7 @@ const scanFiles = async (resetSelection = true) => {
       options: {
         target_dir: targetDir.value,
         min_size_mb: minSizeMB.value ? Number(minSizeMB.value) : null,
+        max_size_mb: maxSizeMB.value ? Number(maxSizeMB.value) : null,
         created_before_ms: createdBeforeMs,
         modified_before_ms: modifiedBeforeMs,
         extensions: exts.length > 0 ? exts : null,
@@ -576,11 +920,26 @@ const scanFiles = async (resetSelection = true) => {
 
     scanResult.value = result.files;
     totalSize.value = result.total_size;
+    hasScanned.value = true;
+    permissionErrors.value = result.permission_errors || [];
+    scanTruncated.value = result.truncated || false;
 
+    // Switch to rendering phase — UI stays responsive via chunked buildTree
+    isScanning.value = false;
+    isRendering.value = true;
+    scanProgressPath.value = `文件收集完毕(${scanResult.value.length.toLocaleString()} 个)，正在构建目录树...`;
+    await nextTick();
+
+    treeRoot.value = await buildTree(scanResult.value);
+
+    // Default collapse all directories — only show top-level items
+    const allDirIds: string[] = (treeRoot.value as any)._allDirIds || [];
     if (resetSelection) {
-      collapsedDirs.value = new Set();
+      collapsedDirs.value = new Set(allDirIds);
     }
-    treeRoot.value = buildTree(scanResult.value);
+
+    scanProgressPath.value = "正在初始化选择...";
+    await yieldToMain();
 
     // Only auto-select all if not a refresh
     if (resetSelection) {
@@ -596,10 +955,11 @@ const scanFiles = async (resetSelection = true) => {
       directorySelectedCount.value = selCountMap;
       selectedIds.value = initialSelection;
     } else {
-      // Refresh mode: clear selections that no longer exist
+      // Refresh mode: clear selections that no longer exist — use Set for O(1) lookup
+      const existingIds = new Set(scanResult.value.map((f: any) => f.id));
       const nextSet = new Set<string>();
       selectedIds.value.forEach((id) => {
-        if (scanResult.value.some((f) => f.id === id)) {
+        if (existingIds.has(id)) {
           nextSet.add(id);
         }
       });
@@ -625,7 +985,13 @@ const scanFiles = async (resetSelection = true) => {
   } catch (err: any) {
     await message(`扫描失败: ${err}`, { title: "错误", kind: "error" });
   } finally {
+    if (_scanTimer) {
+      clearInterval(_scanTimer);
+      _scanTimer = null;
+    }
+    scanDuration.value = Math.round((performance.now() - scanStartTime) / 1000 * 10) / 10;
     isScanning.value = false;
+    isRendering.value = false;
     scanProgressPath.value = "";
     if (_unlistenProgress.value) {
       _unlistenProgress.value();
@@ -871,7 +1237,7 @@ const executeBatchAddWhitelist = async (
   const nextSet = new Set(selectedIds.value);
   removedIds.forEach((id) => nextSet.delete(id));
   selectedIds.value = nextSet;
-  treeRoot.value = buildTree(scanResult.value);
+  treeRoot.value = await buildTree(scanResult.value);
 
   const newSelCountMap = new Map<string, number>();
   const countSelected = (node: any): number => {
@@ -905,10 +1271,7 @@ const executeBatchAddWhitelist = async (
   }
 
   const desc = isDeepFilesOnly ? "仅加入了相关文件" : "会自动包含其子项目";
-  await message(`成功将 ${pathsToAdd.length} 项（${desc}）加入白名单并隐藏。`, {
-    title: "操作成功",
-    kind: "info",
-  });
+  showToast(`已将 ${pathsToAdd.length} 项（${desc}）加入白名单`, 'success');
 };
 
 const confirmBatchAddSubFilesOnly = async () => {
@@ -993,30 +1356,21 @@ const executeClean = async () => {
       await new Promise((resolve) => setTimeout(resolve, 800));
 
       if (isCanceling.value) {
-        await message(
-          `清理被手动终止（已清理 ${cleanProgress.value.current} / ${cleanProgress.value.total}），将重新刷新列表。\n\n已清理的文件可在回收站/废纸篓中找回。`,
-          {
-            title: "清理终止",
-            kind: "info",
-          },
+        showToast(
+          `清理已终止（${cleanProgress.value.current} / ${cleanProgress.value.total}），可在废纸篓中找回`,
+          'warning', 4000,
         );
       } else {
-        await message(
-          `已成功清理 ${cleanProgress.value.total} 个项目，释放 ${formatSize(selectedSize.value)} 空间。\n\n如需恢复，可在回收站/废纸篓中找回。`,
-          {
-            title: "清理完成",
-            kind: "info",
-          },
+        showToast(
+          `已将 ${cleanProgress.value.total} 个项目放入回收站，释放 ${formatSize(selectedSize.value)}`,
+          'success', 4000,
         );
       }
 
       // 成功后重新触发一遍扫描以刷新列表
       scanFiles(false);
     } catch (err: any) {
-      await message(`${err}`, {
-        title: "部分操作失败",
-        kind: "warning",
-      });
+      showToast(`部分操作失败: ${err}`, 'warning', 5000);
       // 即便有部分失败，也可以刷新一下列表看看剩下哪些
       scanFiles(false);
     } finally {
@@ -1028,6 +1382,14 @@ const executeClean = async () => {
 
 <template>
   <div class="app-wrapper">
+    <!-- Drop Overlay -->
+    <div v-if="isDragOver" class="drop-overlay">
+      <div class="drop-hint">
+        <div style="font-size: 48px">📂</div>
+        <p>拖放文件夹到此处</p>
+      </div>
+    </div>
+
     <div class="layout">
       <!-- Sidebar Panel -->
       <aside class="sidebar">
@@ -1054,13 +1416,23 @@ const executeClean = async () => {
         </div>
 
         <div class="card form-section">
-          <h3>筛选属性</h3>
+          <div class="section-title-row">
+            <h3>筛选属性</h3>
+            <span class="rule-badge" @click="showFilterRulesModal = true">
+              📋 规则<span v-if="filterRules.length > 0"> {{ filterRules.length }}</span>
+            </span>
+          </div>
 
           <div class="form-group">
             <label>文件体积筛选</label>
             <div class="input-with-unit">
               <span>大于</span>
               <input type="number" v-model="minSizeMB" placeholder="未设置" />
+              <span>MB</span>
+            </div>
+            <div class="input-with-unit" style="margin-top: 8px">
+              <span>小于</span>
+              <input type="number" v-model="maxSizeMB" placeholder="未设置" />
               <span>MB</span>
             </div>
           </div>
@@ -1147,9 +1519,13 @@ const executeClean = async () => {
               align-items: center;
             "
           >
-            <label class="checkbox-ctrl">
+            <label class="checkbox-ctrl" style="display: flex; margin-bottom: 0;">
               <input type="checkbox" v-model="includeHidden" />
               包含隐藏文件
+            </label>
+            <label class="checkbox-ctrl" style="display: flex; margin-bottom: 0;">
+              <input type="checkbox" v-model="saveAsRule" />
+              保存为规则
             </label>
           </div>
         </div>
@@ -1167,8 +1543,12 @@ const executeClean = async () => {
 
       <!-- Main Content Panel -->
       <main class="main-content">
-        <header class="main-header">
-          <h3>文件预览列表</h3>
+        <header class="main-header" :class="{ 'has-border': !diskUsage }">
+          <div v-if="diskUsage" class="disk-info-inline">
+            <span>总容量 {{ formatSize(diskUsage.total_bytes) }}</span>
+            <span>已使用 {{ formatSize(diskUsage.used_bytes) }}</span>
+            <span>可用 {{ formatSize(diskUsage.available_bytes) }}</span>
+          </div>
           <div class="stats" v-if="scanResult.length > 0">
             <span class="badge"
               >已选 {{ selectedIds.size }} / 共 {{ scanResult.length }}</span
@@ -1176,27 +1556,72 @@ const executeClean = async () => {
             <span class="badge highlight"
               >可释放 {{ formatSize(selectedSize) }}</span
             >
+            <span class="badge" v-if="scanDuration > 0"
+              >耗时 {{ scanDuration }}s</span
+            >
           </div>
         </header>
 
+        <!-- Disk Usage Bar -->
+        <div v-if="diskUsage" class="disk-usage-bar">
+          <div class="disk-bar-bg">
+            <div
+              class="disk-bar-fill"
+              :style="{ width: (diskUsage.used_bytes / diskUsage.total_bytes * 100) + '%' }"
+              :class="{ warning: diskUsage.available_bytes / diskUsage.total_bytes < 0.1 }"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Truncation Warning -->
+        <div v-if="scanTruncated && !isScanning" class="permission-hint" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+          <span>⚠️ 匹配文件数量过多，仅显示前 {{ scanResult.length.toLocaleString() }} 个结果。</span>
+          <span style="font-size: 12px; opacity: 0.8">
+            建议缩小扫描范围或增加筛选条件以获得更精确的结果。
+          </span>
+        </div>
+
+        <!-- Permission Error Hint -->
+        <div v-if="permissionErrors.length > 0 && !isScanning" class="permission-hint">
+          <span>⚠️ 扫描过程中有 {{ permissionErrors.length }} 个目录因权限不足被跳过。</span>
+          <span style="font-size: 12px; opacity: 0.8">
+            请前往「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中授权 Smart Cleaner。
+          </span>
+        </div>
+
         <div class="list-container">
           <div
-            v-if="targetDir && !isScanning && scanResult.length === 0"
+            v-if="targetDir && !isScanning && scanResult.length === 0 && hasScanned"
             class="empty-state"
           >
             <div class="empty-icon">🍃</div>
             <p>太棒了，目前该目录下没有符合清理条件的垃圾文件！</p>
           </div>
+          <div
+            v-else-if="targetDir && !isScanning && scanResult.length === 0 && !hasScanned"
+            class="empty-state"
+          >
+            <div class="empty-icon">🔍</div>
+            <p>请点击左侧「开始扫描」按钮查看文件</p>
+          </div>
           <div v-else-if="!targetDir" class="empty-state">
             <div class="empty-icon">👈</div>
             <p>请先在左侧选择要扫描的目录并配置规则</p>
           </div>
-          <div v-else-if="isScanning" class="empty-state">
+          <div v-else-if="isScanning || isRendering" class="empty-state">
             <div class="spinner"></div>
-            <p>努力扫描中...</p>
+            <p>{{ isRendering ? '正在渲染文件列表...' : '努力扫描中...' }} {{ scanElapsed }}s</p>
             <div class="progress-path" v-if="scanProgressPath">
               {{ scanProgressPath }}
             </div>
+            <button
+              v-if="!isRendering"
+              class="mini-btn"
+              style="margin-top: 12px"
+              @click="invoke('cancel_scan')"
+            >
+              终止扫描
+            </button>
           </div>
 
           <div v-else class="file-list">
@@ -1441,7 +1866,7 @@ const executeClean = async () => {
               :disabled="selectedIds.size === 0"
               @click="executeClean"
             >
-              🗑️ 确认移入回收站
+              🗑️ 移入回收站
             </button>
           </div>
 
@@ -1694,10 +2119,91 @@ const executeClean = async () => {
             </li>
           </ul>
         </div>
-        <footer class="modal-footer" v-if="whitelist.length > 0">
-          <button class="btn-text danger-text" @click="clearWhitelist">
-            清空全部
-          </button>
+        <footer class="modal-footer">
+          <div style="display: flex; justify-content: space-between; width: 100%; align-items: center">
+            <div style="display: flex; gap: 8px">
+              <button
+                v-if="whitelist.length > 0"
+                class="btn-text"
+                @click="exportWhitelist"
+                style="color: var(--accent)"
+              >
+                📤 导出
+              </button>
+              <button
+                class="btn-text"
+                @click="importWhitelist"
+                style="color: var(--accent)"
+              >
+                📥 导入
+              </button>
+            </div>
+            <button
+              v-if="whitelist.length > 0"
+              class="btn-text danger-text"
+              @click="clearWhitelist"
+            >
+              清空全部
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Filter Rules Modal -->
+    <div
+      class="modal-overlay"
+      v-if="showFilterRulesModal"
+      @click.self="showFilterRulesModal = false"
+    >
+      <div class="modal-content sidebar-modal">
+        <header class="modal-header">
+          <h3>📋 筛选规则</h3>
+          <button class="close-btn" @click="showFilterRulesModal = false">✕</button>
+        </header>
+        <div class="modal-body">
+          <p class="modal-desc" v-if="filterRules.length > 0">
+            已保存的筛选规则，点击「应用」快速加载：
+          </p>
+          <div v-if="filterRules.length === 0" class="empty-state mini">
+            暂无已保存的规则
+          </div>
+          <ul class="rule-list" v-else>
+            <li v-for="rule in filterRules" :key="rule.id">
+              <div class="rule-info" @click="startEditRuleName(rule)">
+                <input
+                  v-if="editingRuleId === rule.id"
+                  v-model="editingRuleName"
+                  class="rule-name-edit"
+                  @blur="finishEditRuleName"
+                  @keyup.enter="($event.target as HTMLInputElement).blur()"
+                  @click.stop
+                  ref="ruleNameEditInput"
+                />
+                <span v-else class="rule-name" title="点击修改名称">{{ rule.name }}</span>
+                <span class="rule-summary">{{ ruleSummary(rule) }}</span>
+              </div>
+              <div class="rule-actions">
+                <button
+                  class="btn-text"
+                  style="color: var(--accent)"
+                  @click="loadFilterRule(rule.id); showFilterRulesModal = false"
+                >
+                  应用
+                </button>
+                <button class="btn-text danger-text" @click="deleteFilterRule(rule.id)">
+                  删除
+                </button>
+              </div>
+            </li>
+          </ul>
+        </div>
+        <footer class="modal-footer" v-if="filterRules.length > 0">
+          <div style="display: flex; justify-content: flex-end; width: 100%;">
+            <button class="btn-text danger-text" @click="clearAllFilterRules">
+              清空全部
+            </button>
+          </div>
         </footer>
       </div>
     </div>
@@ -1958,6 +2464,21 @@ const executeClean = async () => {
       <div style="display: flex; gap: 16px">
         <button
           class="btn-text"
+          @click="invoke('open_trash')"
+          style="
+            color: var(--text-muted);
+            background: transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px;
+          "
+        >
+          🗑️ 回收站
+        </button>
+        <button
+          class="btn-text"
           @click="showWhitelistModal = true"
           style="
             color: var(--text-muted);
@@ -2026,6 +2547,13 @@ const executeClean = async () => {
       </div>
     </div>
 
+    <!-- General Toast -->
+    <Transition name="toast-slide">
+      <div v-if="toast.show" class="general-toast" :class="toast.type" @click="toast.show = false">
+        <span>{{ toast.type === 'success' ? '✅' : toast.type === 'warning' ? '⚠️' : 'ℹ️' }} {{ toast.message }}</span>
+      </div>
+    </Transition>
+
     <!-- Update Toast -->
     <Transition name="toast-slide">
       <div v-if="showUpdateToast" class="update-toast">
@@ -2076,6 +2604,66 @@ const executeClean = async () => {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
+  position: relative;
+}
+
+.drop-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(79, 70, 229, 0.08);
+  border: 3px dashed var(--accent);
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.drop-hint {
+  text-align: center;
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.disk-info-inline {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.disk-usage-bar {
+  padding: 8px 24px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.disk-bar-bg {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.disk-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+.disk-bar-fill.warning {
+  background: var(--danger);
+}
+
+.permission-hint {
+  padding: 8px 24px;
+  background: rgba(239, 68, 68, 0.06);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.15);
+  font-size: 13px;
+  color: var(--danger);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .layout {
@@ -2170,8 +2758,97 @@ const executeClean = async () => {
   background: var(--surface-secondary);
 }
 
+/* Section Title Row */
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.section-title-row h3 {
+  margin-bottom: 15px;
+}
+.rule-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: var(--transition);
+  user-select: none;
+}
+.rule-badge:hover {
+  filter: brightness(0.92);
+}
+
+/* Rule List in Modal */
+.rule-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  max-height: 300px;
+  overflow-y: auto;
+}
+.rule-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.rule-list li:last-child {
+  border-bottom: none;
+}
+.rule-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-right: 12px;
+}
+.rule-name {
+  font-weight: 500;
+  color: var(--text-main);
+  cursor: text;
+}
+.rule-name:hover {
+  color: var(--accent);
+}
+.rule-name-edit {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-main);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.rule-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rule-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .form-group {
   margin-bottom: 14px;
+}
+.form-group:last-child {
+  margin-bottom: 0;
 }
 .form-group label {
   display: block;
@@ -2208,7 +2885,6 @@ const executeClean = async () => {
 
 .action-footer {
   margin-top: auto;
-  padding-top: 16px;
 }
 .btn-block {
   width: 100%;
@@ -2220,13 +2896,14 @@ const executeClean = async () => {
 
 /* Main Content Components */
 .main-header {
-  height: 60px;
-  padding: 0 24px;
+  padding: 12px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--border);
   background: var(--surface);
+}
+.main-header.has-border {
+  border-bottom: 1px solid var(--border);
 }
 .stats {
   display: flex;
@@ -2349,11 +3026,12 @@ const executeClean = async () => {
   color: var(--text-muted);
 }
 .list-header .checkbox-ctrl {
-  width: 80px;
+  width: 60px;
+  padding-left: 5px;
 }
 .col-name {
   flex: 1;
-  padding-left: 36px;
+  padding-left: 26px;
 }
 .col-size {
   min-width: 100px;
@@ -2703,6 +3381,31 @@ const executeClean = async () => {
 .context-menu .menu-item.highlight {
   color: var(--text-main);
   font-weight: 500;
+}
+
+.general-toast {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 3000;
+  background: var(--surface);
+  border: 1px solid rgba(52, 199, 89, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 14px 18px;
+  max-width: 360px;
+  font-size: 14px;
+  color: var(--text-main);
+  cursor: pointer;
+}
+.general-toast.success {
+  border-color: rgba(52, 199, 89, 0.4);
+}
+.general-toast.warning {
+  border-color: rgba(255, 149, 0, 0.4);
+}
+.general-toast.info {
+  border-color: rgba(0, 122, 255, 0.4);
 }
 
 .update-toast {

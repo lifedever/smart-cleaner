@@ -65,7 +65,7 @@ pnpm tauri build
 - **UI 页面**：[Vue 3](https://vuejs.org/) (Composition API) + Vanilla CSS
 - **前端构建**：[Vite 6](https://vitejs.dev/)
 - **桌面框架**：[Tauri v2](https://v2.tauri.app/)
-- **后端内核**：[Rust](https://www.rust-lang.org/) (使用 `walkdir` 进行快速目录遍历，使用 `trash` 进行安全移除)
+- **后端内核**：[Rust](https://www.rust-lang.org/)
 
 ---
 

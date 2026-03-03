@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "1.2.18"
+version = "2.0.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -25,8 +25,8 @@ serde_json = "1"
 trash = "5.0"
 num-format = "0.4.4"
 chrono = "0.4.44"
-walkdir = "2.5.0"
-uuid = { version = "1.21.0", features = ["v4"] }
+jwalk = "0.8"
+fs2 = "0.4"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-process = "2.3.1"
