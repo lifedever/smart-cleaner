@@ -158,7 +158,8 @@ watch(extensions, (val) => {
     extensionType.value = val;
   }
 });
-const includeEmptyDirs = ref(true);
+
+const includeHidden = ref(false);
 
 const collapsedDirs = ref<Set<string>>(new Set());
 const treeRoot = ref<any>(null);
@@ -188,8 +189,8 @@ async function initStore() {
         modifiedBeforeDays.value = savedState.modifiedBeforeDays;
       if (savedState.extensions !== undefined)
         extensions.value = savedState.extensions;
-      if (savedState.includeEmptyDirs !== undefined)
-        includeEmptyDirs.value = savedState.includeEmptyDirs;
+      if (savedState.includeHidden !== undefined)
+        includeHidden.value = savedState.includeHidden;
     }
   } catch (e) {
     console.error("Failed to load store:", e);
@@ -211,7 +212,7 @@ onMounted(async () => {
       createdBeforeDays,
       modifiedBeforeDays,
       extensions,
-      includeEmptyDirs,
+      includeHidden,
     ],
     async () => {
       if (store) {
@@ -221,12 +222,24 @@ onMounted(async () => {
           createdBeforeDays: createdBeforeDays.value,
           modifiedBeforeDays: modifiedBeforeDays.value,
           extensions: extensions.value,
-          includeEmptyDirs: includeEmptyDirs.value,
+          includeHidden: includeHidden.value,
         });
         await store.save();
       }
     },
     { deep: true },
+  );
+
+  // Clear scan results when filter options change
+  watch(
+    [minSizeMB, createdBeforeDays, modifiedBeforeDays, extensions, includeHidden],
+    () => {
+      scanResult.value = [];
+      totalSize.value = 0;
+      selectedIds.value = new Set();
+      directorySelectedCount.value = new Map();
+      treeRoot.value = null;
+    },
   );
 
   // Auto check update on every launch
@@ -412,12 +425,15 @@ const buildTree = (files: any[]) => {
     });
   });
 
-  // Calculate sizes and recursive counts
+  // Calculate sizes, time ranges, and recursive counts
   const finalizeStats = (node: any) => {
     let sizeTotal = 0;
     let countTotal = 0;
+    let createdMin = Infinity;
+    let modifiedMax = 0;
 
-    if (!node.isDir) {
+    if (!isTreeDir(node)) {
+      // Leaf node: file or empty directory from scan results
       return { size: node.size, count: 1 };
     }
 
@@ -425,9 +441,15 @@ const buildTree = (files: any[]) => {
       const stats = finalizeStats(child);
       sizeTotal += stats.size;
       countTotal += stats.count;
+      if (child.created_at && child.created_at < createdMin)
+        createdMin = child.created_at;
+      if (child.modified_at && child.modified_at > modifiedMax)
+        modifiedMax = child.modified_at;
     });
 
     node.size = sizeTotal;
+    node.created_at = createdMin === Infinity ? 0 : createdMin;
+    node.modified_at = modifiedMax;
     directoryTotalCount.set(node.id, countTotal);
     return { size: sizeTotal, count: countTotal };
   };
@@ -446,17 +468,14 @@ const flattenTree = (node: any, depth = -1): any[] => {
     // Sort siblings based on global sortOrder
     const children = Array.from(node.children.values()).sort(
       (a: any, b: any) => {
-        if (sortOrder.value === "none") {
-          // Default: dirs first, then name
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        }
-
-        const modifier = sortOrder.value === "asc" ? 1 : -1;
-        // Keep dirs grouped at top or just follow size? Typically tree views group dirs.
-        // Let's group dirs but sort both groups by size.
         if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return (a.size - b.size) * modifier;
+        const modifier = sortOrder.value === "asc" ? 1 : -1;
+        if (sortField.value === "size") {
+          return (a.size - b.size) * modifier;
+        }
+        const field =
+          sortField.value === "created" ? "created_at" : "modified_at";
+        return ((a[field] || 0) - (b[field] || 0)) * modifier;
       },
     );
 
@@ -549,7 +568,8 @@ const scanFiles = async (resetSelection = true) => {
         created_before_ms: createdBeforeMs,
         modified_before_ms: modifiedBeforeMs,
         extensions: exts.length > 0 ? exts : null,
-        include_empty_dirs: includeEmptyDirs.value,
+        include_empty_dirs: true,
+        include_hidden: includeHidden.value,
         whitelist: whitelist.value,
       },
     });
@@ -570,7 +590,6 @@ const scanFiles = async (resetSelection = true) => {
         initialSelection.add(f.id);
       });
 
-      // Helper to fill selection map at start
       directoryTotalCount.forEach((count, dirId) => {
         selCountMap.set(dirId, count);
       });
@@ -590,7 +609,7 @@ const scanFiles = async (resetSelection = true) => {
       const newSelCountMap = new Map<string, number>();
       const countSelected = (node: any): number => {
         let count = 0;
-        if (!node.isDir) {
+        if (!isTreeDir(node)) {
           if (selectedIds.value.has(node.id)) count = 1;
         } else {
           node.children.forEach((child: any) => {
@@ -626,11 +645,13 @@ const toggleSelection = (item: any) => {
   const affectedDirs: string[] = [];
 
   const collect = (node: any) => {
-    if (!node.isDir) {
-      affectedFiles.push(node.id);
-    } else {
+    if (isTreeDir(node)) {
+      // Intermediate directory node (or root)
       affectedDirs.push(node.id);
       node.children.forEach(collect);
+    } else {
+      // Scan result item: file or empty directory
+      affectedFiles.push(node.id);
     }
   };
 
@@ -676,10 +697,10 @@ const toggleSelection = (item: any) => {
       if (parentNode) {
         let count = 0;
         parentNode.children.forEach((child: any) => {
-          if (!child.isDir) {
-            if (nextSet.has(child.id)) count++;
-          } else {
+          if (isTreeDir(child)) {
             count += selCountMap.get(child.id) || 0;
+          } else {
+            if (nextSet.has(child.id)) count++;
           }
         });
         selCountMap.set(parentNode.id, count);
@@ -689,10 +710,10 @@ const toggleSelection = (item: any) => {
       // Root case
       let count = 0;
       treeRoot.value.children.forEach((child: any) => {
-        if (!child.isDir) {
-          if (nextSet.has(child.id)) count++;
-        } else {
+        if (isTreeDir(child)) {
           count += selCountMap.get(child.id) || 0;
+        } else {
+          if (nextSet.has(child.id)) count++;
         }
       });
       selCountMap.set("root", count);
@@ -707,7 +728,8 @@ const toggleSelection = (item: any) => {
 
 // Removed unused toggleSelectAll
 
-const sortOrder = ref<"none" | "asc" | "desc">("desc");
+const sortField = ref<"size" | "created" | "modified">("size");
+const sortOrder = ref<"asc" | "desc">("desc");
 
 // Removed unused toggleSort
 
@@ -796,23 +818,29 @@ const getFileIcon = (fileName: string, isDir: boolean) => {
 
 const treeData = computed(() => {
   if (!treeRoot.value) return [];
-  // Ensure we rebuild when sortOrder or collapsedDirs changes
+  // Ensure we rebuild when sort or collapsedDirs changes
+  void sortField.value;
   void sortOrder.value;
   void collapsedDirs.value;
   return flattenTree(treeRoot.value);
 });
 
+const isTreeDir = (item: any) =>
+  item.isDir && (item.id === "root" || item.id.startsWith("dir-"));
+
 const isPartiallySelected = (item: any) => {
-  if (!item.isDir) return false;
+  if (!isTreeDir(item)) return false;
   const selected = directorySelectedCount.value.get(item.id) || 0;
   const total = directoryTotalCount.get(item.id) || 0;
   return selected > 0 && selected < total;
 };
 
 const isAllSelected = (item: any) => {
-  if (!item.isDir) return selectedIds.value.has(item.id);
+  if (!isTreeDir(item)) {
+    return selectedIds.value.has(item.id);
+  }
   const selected = directorySelectedCount.value.get(item.id) || 0;
-  const total = directoryTotalCount.get(item.id) || 1; // avoid /0
+  const total = directoryTotalCount.get(item.id) || 1;
   return selected === total;
 };
 
@@ -966,9 +994,17 @@ const executeClean = async () => {
 
       if (isCanceling.value) {
         await message(
-          `清理被手动终止（已清理 ${cleanProgress.value.current} / ${cleanProgress.value.total}），将重新刷新列表。`,
+          `清理被手动终止（已清理 ${cleanProgress.value.current} / ${cleanProgress.value.total}），将重新刷新列表。\n\n已清理的文件可在回收站/废纸篓中找回。`,
           {
             title: "清理终止",
+            kind: "info",
+          },
+        );
+      } else {
+        await message(
+          `已成功清理 ${cleanProgress.value.total} 个项目，释放 ${formatSize(selectedSize.value)} 空间。\n\n如需恢复，可在回收站/废纸篓中找回。`,
+          {
+            title: "清理完成",
             kind: "info",
           },
         );
@@ -1112,8 +1148,8 @@ const executeClean = async () => {
             "
           >
             <label class="checkbox-ctrl">
-              <input type="checkbox" v-model="includeEmptyDirs" />
-              包含并清理空目录
+              <input type="checkbox" v-model="includeHidden" />
+              包含隐藏文件
             </label>
           </div>
         </div>
@@ -1217,12 +1253,49 @@ const executeClean = async () => {
                   </button>
                 </div>
               </div>
-              <div
-                class="col-size"
-                @click="sortOrder = sortOrder === 'desc' ? 'asc' : 'desc'"
-                style="cursor: pointer; user-select: none"
-              >
-                大小 {{ sortOrder === "desc" ? "↓" : "↑" }}
+              <div class="col-size sort-group">
+                <span
+                  class="sort-btn"
+                  :class="{ active: sortField === 'size' }"
+                  @click="
+                    sortField === 'size'
+                      ? (sortOrder = sortOrder === 'desc' ? 'asc' : 'desc')
+                      : ((sortField = 'size'), (sortOrder = 'desc'))
+                  "
+                >
+                  大小
+                  <template v-if="sortField === 'size'">{{
+                    sortOrder === "desc" ? "↓" : "↑"
+                  }}</template>
+                </span>
+                <span
+                  class="sort-btn"
+                  :class="{ active: sortField === 'created' }"
+                  @click="
+                    sortField === 'created'
+                      ? (sortOrder = sortOrder === 'desc' ? 'asc' : 'desc')
+                      : ((sortField = 'created'), (sortOrder = 'desc'))
+                  "
+                >
+                  创建
+                  <template v-if="sortField === 'created'">{{
+                    sortOrder === "desc" ? "↓" : "↑"
+                  }}</template>
+                </span>
+                <span
+                  class="sort-btn"
+                  :class="{ active: sortField === 'modified' }"
+                  @click="
+                    sortField === 'modified'
+                      ? (sortOrder = sortOrder === 'desc' ? 'asc' : 'desc')
+                      : ((sortField = 'modified'), (sortOrder = 'desc'))
+                  "
+                >
+                  修改
+                  <template v-if="sortField === 'modified'">{{
+                    sortOrder === "desc" ? "↓" : "↑"
+                  }}</template>
+                </span>
               </div>
             </div>
 
@@ -2283,8 +2356,28 @@ const executeClean = async () => {
   padding-left: 36px;
 }
 .col-size {
-  width: 100px;
+  min-width: 100px;
   text-align: right;
+}
+.sort-group {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.sort-btn {
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.sort-btn:hover {
+  background: var(--surface-secondary);
+}
+.sort-btn.active {
+  color: var(--text-main);
+  font-weight: 600;
 }
 
 .list-body {

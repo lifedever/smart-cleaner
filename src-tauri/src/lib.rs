@@ -42,6 +42,7 @@ pub struct ScanOptions {
     pub modified_before_ms: Option<u64>, // timestamp
     pub extensions: Option<Vec<String>>,
     pub include_empty_dirs: Option<bool>,
+    pub include_hidden: Option<bool>,
     pub whitelist: Option<Vec<String>>,
 }
 
@@ -67,6 +68,7 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
     }
 
     let min_size_bytes = options.min_size_mb.map(|mb| mb * 1024 * 1024);
+    let include_hidden = options.include_hidden.unwrap_or(false);
 
     let whitelist: std::collections::HashSet<String> =
         options.whitelist.unwrap_or_default().into_iter().collect();
@@ -82,7 +84,18 @@ async fn scan_directory(app: AppHandle, options: ScanOptions) -> Result<ScanResu
             .into_iter()
             .filter_entry(|e| {
                 let path_str = e.path().to_string_lossy();
-                !whitelist.contains(path_str.as_ref())
+                if whitelist.contains(path_str.as_ref()) {
+                    return false;
+                }
+                // Skip hidden files/dirs (starting with .) unless include_hidden
+                if !include_hidden {
+                    if let Some(name) = e.file_name().to_str() {
+                        if name.starts_with('.') {
+                            return false;
+                        }
+                    }
+                }
+                true
             });
 
         for entry in walker {
