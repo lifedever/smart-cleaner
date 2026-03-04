@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from "vue";
+import { ref, shallowRef, computed, nextTick, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -44,7 +44,7 @@ const showConfirm = (title: string, message: string) => {
 };
 
 const hasUpdate = ref(false);
-const updateInfo = ref<any>(null);
+const updateInfo = shallowRef<any>(null);
 const updateLoading = ref(false);
 const updateLoadingText = ref("");
 const showUpdateToast = ref(false);
